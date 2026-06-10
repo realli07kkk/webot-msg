@@ -21,8 +21,8 @@ implements:
 - Runtime config：启动时读取的 TOML 配置，控制 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL 和日志文件策略，不保存 bot 凭据或消息上下文。代码锚点：`internal/runtimeconfig/config.go:27`。
 - Control console：通过 Unix socket 连接运行中 service 的交互控制台，复用 `internal/console` 命令语义；`/exit` 和 `/quit` 只关闭当前控制台连接，不停止 service。代码锚点：`internal/control/server.go:1`、`internal/control/client.go:1`。
 - Log file policy：标准日志的文件输出路径和大小上限，默认写入 `~/.webot-msg/logs/webot-msg.log`，达到上限后只保留一个 `.1` 备份。代码锚点：`internal/logfile/writer.go:9`。
-- Linux deploy script：仓库内的 Linux/systemd 编译部署入口，负责编译 `bin/webot-msg`、首次写入默认 Runtime config、安装 `webot-msg.service`、升级时按原运行状态 stop/start。代码锚点：`scripts/linux-service.sh:1`。
-- Service unit：Linux deploy script 生成的 systemd unit，固定名为 `webot-msg.service`，用 `ExecStart={repo}/bin/webot-msg` 启动服务；程序固定读取运行用户的 `~/.webot-msg/config/webot-msg.toml`。代码锚点：`scripts/linux-service.sh:206`。
+- Linux deploy script：仓库内的 Linux/systemd 编译部署入口，负责编译 `bin/webot-msg`、安装 `/usr/local/bin/webot-msg`、首次写入默认 Runtime config、安装 `webot-msg.service`、升级时按原运行状态 stop/start。代码锚点：`scripts/linux-service.sh:1`。
+- Service unit：Linux deploy script 生成的 systemd unit，固定名为 `webot-msg.service`，用 `ExecStart=/usr/local/bin/webot-msg` 启动服务；程序固定读取运行用户的 `~/.webot-msg/config/webot-msg.toml`。代码锚点：`scripts/linux-service.sh:206`。
 
 ## 1. 定位与受众
 
@@ -34,7 +34,7 @@ implements:
 
 `internal/runtimeconfig` 是启动配置计算层。它先给出内置默认值，再按可选 TOML 覆盖，最后做 `~` 展开、端口范围、BaseURL scheme、control socket path、日志大小和未知 key 校验。默认存储根目录是 `~/.webot-msg/`，默认 auth store、日志路径和控制台 socket 分别落在 `config/`、`logs/` 和根目录。代码锚点：`internal/runtimeconfig/config.go:16`、`internal/runtimeconfig/config.go:54`、`internal/runtimeconfig/config.go:76`、`internal/runtimeconfig/config.go:97`。
 
-`scripts/linux-service.sh` 是 Linux/systemd 部署编排入口。`install` 会检查 Linux/systemd、Go、部署用户 home 和 sudo 权限，编译当前源码到 `bin/webot-msg`，创建部署用户的 `~/.webot-msg/config/` 与 `~/.webot-msg/logs/`，首次写入默认 `webot-msg.toml`，再生成 `/etc/systemd/system/webot-msg.service` 并执行 `systemctl daemon-reload`。`upgrade` 会先用 `systemctl is-active --quiet webot-msg` 记录服务是否 active；active 时先 stop，替换二进制、刷新 systemd unit 并 `daemon-reload` 后再 start；非 active 时只替换二进制并刷新 unit，不主动启动。`start`、`stop`、`restart`、`status` 子命令透传到 `systemctl`。代码锚点：`scripts/linux-service.sh:261`、`scripts/linux-service.sh:272`、`scripts/linux-service.sh:300`。
+`scripts/linux-service.sh` 是 Linux/systemd 部署编排入口。`install` 会检查 Linux/systemd、Go、部署用户 home 和 sudo 权限，编译当前源码到 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`，创建部署用户的 `~/.webot-msg/config/` 与 `~/.webot-msg/logs/`，首次写入默认 `webot-msg.toml`，再生成 `/etc/systemd/system/webot-msg.service` 并执行 `systemctl daemon-reload`。`upgrade` 会先用 `systemctl is-active --quiet webot-msg` 记录服务是否 active；active 时先 stop，替换系统 PATH 中的二进制、刷新 systemd unit 并 `daemon-reload` 后再 start；非 active 时只替换二进制并刷新 unit，不主动启动。`start`、`stop`、`restart`、`status` 子命令透传到 `systemctl`。代码锚点：`scripts/linux-service.sh:261`、`scripts/linux-service.sh:272`、`scripts/linux-service.sh:300`。
 
 `internal/logfile` 是标准日志文件输出的轻量大小控制层。传入空日志路径时禁用文件日志；传入路径时以追加方式打开文件，并在下一次写入会超过上限时把当前文件轮转为 `.1`。代码锚点：`internal/logfile/writer.go:17`、`internal/logfile/writer.go:47`、`internal/logfile/writer.go:74`。
 
@@ -68,6 +68,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - systemd 交互通过本地 Unix socket，不尝试 attach systemd service 的 stdin，也不通过再启动第二个服务实例进入控制台。
 - auth store 权限按凭据处理：新建 auth 目录使用 owner-only，auth 文件保存和 legacy copy 后都保持 owner-only；日志文件不使用 auth store 权限策略。
 - Linux 部署入口保持仓库脚本形态：本项目提供 Bash 脚本管理单个 `webot-msg.service`，不引入 `.deb`、RPM、Docker、Ansible 或多实例管理。
+- 部署后二进制进入系统 PATH：脚本保留仓库 `bin/webot-msg` 作为构建产物，同时安装 `/usr/local/bin/webot-msg` 作为用户命令和 systemd `ExecStart`，避免部署后必须进入仓库目录执行控制台。
 - 升级保持原运行意图并刷新 unit：`upgrade` 只在服务升级前处于 active 时 stop 后再 start；服务原本非 active 时只替换二进制和刷新 systemd unit，不主动启动。
 
 ## 5. 代码锚点
@@ -97,7 +98,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - HTTP API token 为空或不匹配都会返回 unauthorized，不能绕过本地 `APIToken` 校验。代码锚点：`internal/api/server.go:65`。
 - 控制台 `/exit` 或 `/quit` 只关闭当前控制台会话，不停止 service；真正停止进程走 `os.Interrupt` / `SIGTERM`，systemd 部署下用 `systemctl stop webot-msg` 或部署脚本 `stop`。stdin 关闭不是主动退出，服务会继续后台运行。代码锚点：`internal/console/console.go:58`、`internal/app/app.go:184`。
 - Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
-- `webot-msg.service` 使用部署用户运行，`ExecStart` 中的二进制路径和配置路径必须是绝对路径；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
+- `webot-msg.service` 使用部署用户运行，`ExecStart` 指向 `/usr/local/bin/webot-msg`；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
 - 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 或删除 `~/.webot-msg/config/auth.json`；真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
 
 ## 7. 相关文档

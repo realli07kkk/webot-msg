@@ -76,14 +76,14 @@ accepted_at: 2026-06-10
 - [x] 脚本入口：`install` / `upgrade` / `start` / `stop` / `restart` / `status` 均在 `main` 分发。
 - [x] 默认配置文件：`CONFIG_PATH` 指向 `~/.webot-msg/config/webot-msg.toml`，由 `write_default_config` 使用。
 - [x] systemd service：`SERVICE_FILE` 指向 `/etc/systemd/system/webot-msg.service`，由 `write_service_unit` 使用。
-- [x] 构建产物：`BINARY_PATH` 指向仓库 `bin/webot-msg`，由 build 和 service unit 使用。
+- [x] 构建产物：`BUILD_BINARY_PATH` 指向仓库 `bin/webot-msg`，由 build 使用；`INSTALL_BINARY_PATH` 指向 `/usr/local/bin/webot-msg`，由 service unit 和用户命令使用。
 - [x] 用户文档：新增 `docs/user/linux-systemd-deploy.md`，并从 Runtime config 文档链接过去。
 - [x] 反向 grep：`linux-service` / `webot-msg.service` / `systemd` 命中均落在脚本、部署文档、架构/需求归并和 feature spec 内。
 - [x] 拔除沙盘推演：删除 `scripts/linux-service.sh`、`docs/user/linux-systemd-deploy.md`、Runtime config 文档链接、architecture/requirement 的部署段落后，该 feature 用户可见面会消失；auth store 与 Go 主流程不受影响。
 
 ## 3. 验收场景核对
 
-- [x] S1：Linux/systemd 上执行 install 后生成二进制、目录、默认 TOML。
+- [x] S1：Linux/systemd 上执行 install 后生成仓库二进制、系统 PATH 二进制、目录、默认 TOML。
   - 证据来源：代码核对；当前环境非 Linux/systemd，未实机执行。
   - 结果：代码路径通过，目标环境实操待部署机验证。
 - [x] S2：首次 install 默认 TOML 内容正确。
@@ -92,8 +92,8 @@ accepted_at: 2026-06-10
 - [x] S3：已有 TOML 后 install 不覆盖，auth store 不删除。
   - 证据来源：`[[ -e "${CONFIG_PATH}" ]]` 早退；脚本无 `auth.json` 删除/写入逻辑。
   - 结果：通过。
-- [x] S4：service `ExecStart` 使用绝对二进制路径和绝对配置路径。
-  - 证据来源：`REPO_ROOT`、`BINARY_PATH`、`DEPLOY_HOME` 都解析为绝对路径；`write_service_unit` 静态核对。
+- [x] S4：service `ExecStart` 使用 `/usr/local/bin/webot-msg`。
+  - 证据来源：`INSTALL_BINARY_PATH` 为绝对路径；`write_service_unit` 静态核对。
   - 结果：通过。
 - [x] S5：`systemctl start/stop/restart/status webot-msg` 可识别 service。
   - 证据来源：service unit 写入 `/etc/systemd/system/webot-msg.service` 并执行 `daemon-reload`；当前环境未实机执行。
@@ -108,7 +108,7 @@ accepted_at: 2026-06-10
   - 证据来源：`cmd_upgrade` 静态核对。
   - 结果：通过。
 - [x] S9：`go build` 失败不破坏旧二进制。
-  - 证据来源：`build_binary` 先构建到 `mktemp`，失败时删除临时文件并退出，成功后 `mv` 替换。
+  - 证据来源：`build_binary` 先构建到 `mktemp`，失败时删除临时文件并退出，成功后 `mv` 替换；系统安装发生在 build 成功之后。
   - 结果：通过。
 - [x] S10：缺少依赖或权限时非零退出并指出阶段。
   - 证据来源：`require_command`、`require_linux_systemd`、`require_sudo`、各阶段 `fail`；本机 install 输出非 Linux/systemd 错误。

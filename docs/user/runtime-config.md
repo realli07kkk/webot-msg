@@ -18,7 +18,7 @@ last_reviewed: 2026-06-10
 
 ## 前置条件
 
-- 你已经能运行 `go run ./cmd/webot-msg`，或已经构建出 `./bin/webot-msg`。
+- 你已经能运行 `go run ./cmd/webot-msg`，已经构建出 `./bin/webot-msg`，或已经通过部署脚本安装出系统命令 `webot-msg`。
 - 如果要复用旧登录态，旧文件仍在 `./config/auth.json`。
 - Runtime config 只放启动参数，不要把 bot token、API token 或消息内容写进 TOML。
 
@@ -60,6 +60,12 @@ go run ./cmd/webot-msg
 
 ```bash
 ./bin/webot-msg
+```
+
+通过 Linux 部署脚本安装后，也可以直接启动系统命令：
+
+```bash
+webot-msg
 ```
 
 4. 临时覆盖端口：
@@ -159,7 +165,7 @@ Q: systemd 启动后怎么进入控制台？
 A: 用同一份配置连接本地控制台 socket：
 
 ```bash
-./bin/webot-msg console
+webot-msg console
 ```
 
 控制台内 `/exit` 或 `/quit` 只退出这次控制台连接，不会停止 systemd 服务。停止服务仍使用 `systemctl stop webot-msg` 或部署脚本的 `stop`。

@@ -7,7 +7,9 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 BIN_DIR="${REPO_ROOT}/bin"
-BINARY_PATH="${BIN_DIR}/${SERVICE_NAME}"
+BUILD_BINARY_PATH="${BIN_DIR}/${SERVICE_NAME}"
+INSTALL_BIN_DIR="/usr/local/bin"
+INSTALL_BINARY_PATH="${INSTALL_BIN_DIR}/${SERVICE_NAME}"
 
 DEPLOY_USER=""
 DEPLOY_GROUP=""
@@ -22,8 +24,8 @@ usage() {
 Usage: $0 <command>
 
 Commands:
-  install   Build bin/${SERVICE_NAME}, create ~/.webot-msg, and install systemd service
-  upgrade   Stop running service if active, replace bin/${SERVICE_NAME}, refresh systemd unit, and restart only if it was active
+  install   Build bin/${SERVICE_NAME}, install ${INSTALL_BINARY_PATH}, create ~/.webot-msg, and install systemd service
+  upgrade   Stop running service if active, replace ${INSTALL_BINARY_PATH}, refresh systemd unit, and restart only if it was active
   start     Run systemctl start ${SERVICE_NAME}
   stop      Run systemctl stop ${SERVICE_NAME}
   restart   Run systemctl restart ${SERVICE_NAME}
@@ -95,7 +97,8 @@ print_paths() {
 	info "deploy user: ${DEPLOY_USER}:${DEPLOY_GROUP}"
 	info "deploy home: ${DEPLOY_HOME}"
 	info "runtime dir: ${WEBOT_DIR}"
-	info "binary path: ${BINARY_PATH}"
+	info "build binary path: ${BUILD_BINARY_PATH}"
+	info "installed binary path: ${INSTALL_BINARY_PATH}"
 	info "config path: ${CONFIG_PATH}"
 	info "service file: ${SERVICE_FILE}"
 }
@@ -103,6 +106,7 @@ print_paths() {
 prepare_common_context() {
 	require_linux_systemd
 	require_command go
+	require_command install
 	resolve_deploy_identity
 	print_paths
 }
@@ -120,7 +124,7 @@ ensure_systemd_path() {
 }
 
 build_binary() {
-	info "building ${BINARY_PATH}"
+	info "building ${BUILD_BINARY_PATH}"
 	mkdir -p "${BIN_DIR}"
 	chown_if_root "${DEPLOY_USER}:${DEPLOY_GROUP}" "${BIN_DIR}" || fail "cannot chown ${BIN_DIR}"
 
@@ -141,11 +145,30 @@ build_binary() {
 		fail "cannot chown temporary binary"
 	}
 
-	mv -f "${tmp_binary}" "${BINARY_PATH}" || {
+	mv -f "${tmp_binary}" "${BUILD_BINARY_PATH}" || {
 		rm -f "${tmp_binary}"
-		fail "cannot replace ${BINARY_PATH}"
+		fail "cannot replace ${BUILD_BINARY_PATH}"
 	}
-	info "binary updated: ${BINARY_PATH}"
+	info "build binary updated: ${BUILD_BINARY_PATH}"
+}
+
+install_system_binary() {
+	info "installing ${BUILD_BINARY_PATH} to ${INSTALL_BINARY_PATH}"
+	sudo_cmd mkdir -p "${INSTALL_BIN_DIR}" || fail "cannot create ${INSTALL_BIN_DIR}"
+
+	local tmp_install
+	tmp_install="$(sudo_cmd mktemp "${INSTALL_BIN_DIR}/.${SERVICE_NAME}.tmp.XXXXXX")" || fail "cannot create temporary installed binary path"
+
+	if ! sudo_cmd install -m 0755 -o root -g root "${BUILD_BINARY_PATH}" "${tmp_install}"; then
+		sudo_cmd rm -f "${tmp_install}"
+		fail "cannot install temporary binary"
+	fi
+
+	sudo_cmd mv -f "${tmp_install}" "${INSTALL_BINARY_PATH}" || {
+		sudo_cmd rm -f "${tmp_install}"
+		fail "cannot replace ${INSTALL_BINARY_PATH}"
+	}
+	info "system binary updated: ${INSTALL_BINARY_PATH}"
 }
 
 create_runtime_dir() {
@@ -208,8 +231,7 @@ EOF
 
 write_service_unit() {
 	ensure_systemd_path "${REPO_ROOT}"
-	ensure_systemd_path "${BINARY_PATH}"
-	ensure_systemd_path "${CONFIG_PATH}"
+	ensure_systemd_path "${INSTALL_BINARY_PATH}"
 
 	info "writing systemd service: ${SERVICE_FILE}"
 	local tmp_service
@@ -226,7 +248,7 @@ Type=simple
 User=${DEPLOY_USER}
 Group=${DEPLOY_GROUP}
 WorkingDirectory=${REPO_ROOT}
-ExecStart=${BINARY_PATH}
+ExecStart=${INSTALL_BINARY_PATH}
 Restart=on-failure
 RestartSec=5s
 
@@ -265,6 +287,7 @@ cmd_install() {
 	prepare_common_context
 	require_sudo
 	build_binary
+	install_system_binary
 	prepare_runtime_dirs
 	write_default_config
 	write_service_unit
@@ -280,6 +303,7 @@ cmd_upgrade() {
 	fi
 
 	require_command go
+	require_command install
 	resolve_deploy_identity
 	print_paths
 	require_sudo
@@ -291,6 +315,7 @@ cmd_upgrade() {
 	fi
 
 	build_binary
+	install_system_binary
 	write_service_unit
 	daemon_reload
 

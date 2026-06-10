@@ -30,7 +30,7 @@ bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部
 
 启动时，工具默认读取 `~/.webot-msg/config/webot-msg.toml`，配置 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径和日志大小上限；默认配置不存在时回退内置默认值。默认 auth store、日志文件与 control socket 统一落在 `~/.webot-msg/` 下，auth store JSON schema 不变。
 
-在 Linux systemd 环境中，用户可以用 `scripts/linux-service.sh install` 编译 `bin/webot-msg`、创建 `~/.webot-msg/config/` 和 `~/.webot-msg/logs/`、首次写入默认 `webot-msg.toml`，并生成 `webot-msg.service`。升级时，脚本先按 `systemctl is-active` 记录服务是否运行：运行中则 stop、替换二进制后再 start；未运行则只替换二进制。
+在 Linux systemd 环境中，用户可以用 `scripts/linux-service.sh install` 编译 `bin/webot-msg`、安装 `/usr/local/bin/webot-msg`、创建 `~/.webot-msg/config/` 和 `~/.webot-msg/logs/`、首次写入默认 `webot-msg.toml`，并生成 `webot-msg.service`。升级时，脚本先按 `systemctl is-active` 记录服务是否运行：运行中则 stop、替换系统 PATH 中的二进制后再 start；未运行则只替换二进制。
 
 ## 边界
 
@@ -45,6 +45,7 @@ bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部
 - 默认 auth store 按本地凭据处理，目录和文件使用 owner-only 权限；显式自定义路径的挂载、备份和系统权限由部署者负责。
 - Linux 部署脚本只面向 systemd 单实例，不提供 `.deb`、RPM、Docker、Ansible、多实例管理、备份或回滚。
 - 安装脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会删除或修改 `~/.webot-msg/config/auth.json`；服务操作需要部署者具备 sudo 权限。
+- 安装脚本固定把用户可执行命令安装到 `/usr/local/bin/webot-msg`，不提供安装前缀配置。
 
 ## 变更记录
 
@@ -52,3 +53,4 @@ bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部
 - 2026-06-10：新增 Linux systemd 部署脚本，支持 `install`、`upgrade` 和 `start` / `stop` / `restart` / `status` 服务控制；安装首次写入默认 Runtime config，升级只恢复原本 active 的服务。
 - 2026-06-10：新增 `webot-msg console` 本地控制台入口，通过 Unix socket 进入 systemd 管理的运行中服务；`/exit` 和 `/quit` 只退出控制台连接，停止进程仍由 systemd 管理。
 - 2026-06-10：服务和控制台默认读取 `~/.webot-msg/config/webot-msg.toml`，同时保留 `-c` 兼容入口，避免破坏旧脚本。
+- 2026-06-10：Linux 部署脚本新增把二进制安装到 `/usr/local/bin/webot-msg`，让 `which webot-msg` 和 `webot-msg console` 在部署后直接可用。

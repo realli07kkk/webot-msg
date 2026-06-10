@@ -5,11 +5,11 @@ steps:
   - action: "编排骨架：新增 Linux deploy script 入口和子命令分发，先实现 help、依赖检查和部署路径解析"
     exit_signal: "在非 Linux/systemd 或缺少依赖时能明确失败；在 Linux 上能打印将使用的 repo root、deploy home、binary path 和 config path"
     status: done
-  - action: "构建与替换节点：实现 go build 到临时二进制，再替换 bin/webot-msg"
-    exit_signal: "install/upgrade 都能生成可执行的 bin/webot-msg；编译失败时旧二进制不被破坏"
+  - action: "构建与替换节点：实现 go build 到临时二进制，再替换 bin/webot-msg 并安装 /usr/local/bin/webot-msg"
+    exit_signal: "install/upgrade 都能生成可执行的 bin/webot-msg 和系统命令 webot-msg；编译失败时旧二进制不被破坏"
     status: done
   - action: "安装节点：创建 ~/.webot-msg/config/ 与 ~/.webot-msg/logs/，写入默认 TOML，生成并 reload systemd service"
-    exit_signal: "重复 install 不覆盖已有 TOML；service 文件 ExecStart 使用绝对二进制路径和绝对配置路径"
+    exit_signal: "重复 install 不覆盖已有 TOML；service 文件 ExecStart 使用 /usr/local/bin/webot-msg"
     status: done
   - action: "升级节点：接入 systemctl is-active、按需 stop、替换二进制、按需 start"
     exit_signal: "服务 active 时升级后恢复 active；服务 inactive 时升级后不自动 start"
@@ -22,7 +22,7 @@ checks:
   - item: "Linux deploy script 提供 install、upgrade、start、stop、restart、status 子命令"
     source: 挂载点
     status: passed
-  - item: "install 使用当前源码编译出仓库 bin/webot-msg，service 的 ExecStart 直接引用该绝对路径"
+  - item: "install 使用当前源码编译出仓库 bin/webot-msg，并安装 /usr/local/bin/webot-msg 供 service 和用户命令使用"
     source: 名词契约
     status: passed
   - item: "install 创建部署用户 home 下的 ~/.webot-msg/config/ 与 ~/.webot-msg/logs/"
@@ -37,7 +37,7 @@ checks:
   - item: "systemd service 名为 webot-msg.service，并写入 /etc/systemd/system/webot-msg.service"
     source: 挂载点
     status: passed
-  - item: "systemd service 的 ExecStart 使用 -c 指向默认配置文件的绝对路径，不依赖 ~ 展开"
+  - item: "systemd service 的 ExecStart 使用 /usr/local/bin/webot-msg，Runtime config 由程序默认路径读取"
     source: 编排骨架
     status: passed
   - item: "systemd service 默认用部署用户运行，不默认以 root 身份运行，除非部署用户本身是 root"
@@ -61,10 +61,10 @@ checks:
   - item: "upgrade 在服务 inactive/failed/unknown 时只编译替换，不自动 start"
     source: 验收场景
     status: passed
-  - item: "install/upgrade 编译到临时二进制，编译成功后才替换 bin/webot-msg"
+  - item: "install/upgrade 编译到临时二进制，编译成功后才替换 bin/webot-msg 并安装 /usr/local/bin/webot-msg"
     source: 流程级约束
     status: passed
-  - item: "go build 失败时脚本非零退出，旧的 bin/webot-msg 不被破坏"
+  - item: "go build 失败时脚本非零退出，旧的 bin/webot-msg 和 /usr/local/bin/webot-msg 不被破坏"
     source: 验收场景
     status: passed
   - item: "缺少 go、systemctl、sudo 权限、无法解析部署用户 home、写 service 失败、daemon-reload 失败、stop/start 失败时脚本非零退出并指出阶段"
