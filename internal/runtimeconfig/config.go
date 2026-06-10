@@ -14,11 +14,13 @@ import (
 )
 
 const (
-	DefaultPort       = 26322
-	DefaultAuthPath   = "~/.webot-msg/config/auth.json"
-	DefaultLogPath    = "~/.webot-msg/logs/webot-msg.log"
-	DefaultLogMaxSize = "100MB"
-	LegacyAuthPath    = "./config/auth.json"
+	DefaultPort              = 26322
+	DefaultConfigPath        = "~/.webot-msg/config/webot-msg.toml"
+	DefaultAuthPath          = "~/.webot-msg/config/auth.json"
+	DefaultControlSocketPath = "~/.webot-msg/webot-msg.sock"
+	DefaultLogPath           = "~/.webot-msg/logs/webot-msg.log"
+	DefaultLogMaxSize        = "100MB"
+	LegacyAuthPath           = "./config/auth.json"
 )
 
 var userHomeDir = os.UserHomeDir
@@ -26,6 +28,7 @@ var userHomeDir = os.UserHomeDir
 type Config struct {
 	API     APIConfig     `toml:"api"`
 	Storage StorageConfig `toml:"storage"`
+	Control ControlConfig `toml:"control"`
 	Ilink   IlinkConfig   `toml:"ilink"`
 	Log     LogConfig     `toml:"log"`
 }
@@ -36,6 +39,10 @@ type APIConfig struct {
 
 type StorageConfig struct {
 	AuthPath string `toml:"auth_path"`
+}
+
+type ControlConfig struct {
+	SocketPath string `toml:"socket_path"`
 }
 
 type IlinkConfig struct {
@@ -55,6 +62,9 @@ func Default() Config {
 		},
 		Storage: StorageConfig{
 			AuthPath: DefaultAuthPath,
+		},
+		Control: ControlConfig{
+			SocketPath: DefaultControlSocketPath,
 		},
 		Ilink: IlinkConfig{
 			BaseURL: ilink.DefaultBaseURL,
@@ -109,6 +119,15 @@ func (c Config) Resolve() (Config, error) {
 	}
 	resolved.Storage.AuthPath = authPath
 
+	socketPath, err := expandHome(resolved.Control.SocketPath)
+	if err != nil {
+		return Config{}, fmt.Errorf("control.socket_path: %w", err)
+	}
+	if socketPath == "" {
+		return Config{}, fmt.Errorf("control.socket_path: must not be empty")
+	}
+	resolved.Control.SocketPath = socketPath
+
 	logPath, err := expandHome(resolved.Log.FilePath)
 	if err != nil {
 		return Config{}, fmt.Errorf("log.file_path: %w", err)
@@ -139,6 +158,13 @@ func (c Config) PrepareStorage() (bool, error) {
 		if err := ensureParentDir(c.Log.FilePath, 0755, false); err != nil {
 			return false, fmt.Errorf("log.file_path: %w", err)
 		}
+	}
+	usesDefaultControlSocketPath, err := c.usesDefaultControlSocketPath()
+	if err != nil {
+		return false, err
+	}
+	if err := ensureParentDir(c.Control.SocketPath, 0700, usesDefaultControlSocketPath); err != nil {
+		return false, fmt.Errorf("control.socket_path: %w", err)
 	}
 
 	copied, err := c.copyLegacyAuth()
@@ -182,6 +208,14 @@ func (c Config) usesDefaultAuthPath() (bool, error) {
 		return false, err
 	}
 	return filepath.Clean(c.Storage.AuthPath) == filepath.Clean(defaultCfg.Storage.AuthPath), nil
+}
+
+func (c Config) usesDefaultControlSocketPath() (bool, error) {
+	defaultCfg, err := Default().Resolve()
+	if err != nil {
+		return false, err
+	}
+	return filepath.Clean(c.Control.SocketPath) == filepath.Clean(defaultCfg.Control.SocketPath), nil
 }
 
 func ensureParentDir(path string, perm os.FileMode, forcePerm bool) error {

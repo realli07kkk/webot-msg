@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,25 +15,26 @@ import (
 	"github.com/realli07kkk/webot-msg/internal/api"
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/console"
+	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
+	"golang.org/x/term"
 )
 
 type App struct {
-	store  *config.Store
-	client *ilink.Client
-
-	activeMu  sync.Mutex
-	activeBot string
+	store             *config.Store
+	client            *ilink.Client
+	controlSocketPath string
 
 	monitorMu       sync.Mutex
 	runningMonitors map[string]struct{}
 }
 
-func New(configPath string, baseURL string) *App {
+func New(configPath string, baseURL string, controlSocketPath string) *App {
 	return &App{
-		store:           config.NewStore(configPath),
-		client:          ilink.NewClient(baseURL),
-		runningMonitors: make(map[string]struct{}),
+		store:             config.NewStore(configPath),
+		client:            ilink.NewClient(baseURL),
+		controlSocketPath: controlSocketPath,
+		runningMonitors:   make(map[string]struct{}),
 	}
 }
 
@@ -45,16 +47,19 @@ func (a *App) Run(port int) error {
 	}
 
 	if a.store.Count() == 0 {
-		fmt.Println("No login bots found. Starting QR Code login...")
-		if err := a.Login(); err != nil {
-			log.Printf("QR login failed: %v\n", err)
+		if isTerminal(os.Stdin) {
+			fmt.Println("No login bots found. Starting QR Code login...")
+			if _, err := a.Login(os.Stdout); err != nil {
+				log.Printf("QR login failed: %v\n", err)
+			}
+		} else {
+			fmt.Println("No login bots found. Use 'webot-msg console' to open a control console and run /login.")
 		}
 	} else {
 		fmt.Printf("Loaded %d bots.\n", a.store.Count())
 	}
 
 	if botID, ok := a.store.SingleBotID(); ok {
-		a.setActiveBotID(botID)
 		fmt.Printf("Auto selected single bot: %s\n", botID)
 	}
 
@@ -63,6 +68,12 @@ func (a *App) Run(port int) error {
 	}
 
 	a.handleShutdownSignal()
+
+	controlServer := control.NewServer(a.controlSocketPath, a)
+	if err := controlServer.Start(); err != nil {
+		return fmt.Errorf("start control console failed: %w", err)
+	}
+	fmt.Printf("Control console listening on unix://%s\n", a.controlSocketPath)
 
 	for _, botID := range a.store.BotIDs() {
 		a.startMonitor(botID)
@@ -75,82 +86,67 @@ func (a *App) Run(port int) error {
 		}
 	}()
 
-	if exitReason := console.Run(a); exitReason == console.ExitReasonCommand {
-		fmt.Println("Exit requested. Saving config and exiting...")
-		if err := a.store.Save(); err != nil {
-			return fmt.Errorf("save config failed: %w", err)
-		}
-		return nil
-	}
+	console.Run(a)
 
-	fmt.Println("Console closed or not available. Running in background...")
+	fmt.Println("Console closed. Service continues running. Use systemd or Ctrl+C to stop the process.")
 	select {}
 }
 
-func (a *App) ActiveBotID() string {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-	return a.activeBot
+func (a *App) DefaultBotID() string {
+	botID, _ := a.store.SingleBotID()
+	return botID
 }
 
-func (a *App) Login() error {
-	user, err := a.client.QRLogin()
+func (a *App) Login(out io.Writer) (string, error) {
+	user, err := a.client.QRLoginWithWriter(out)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := a.store.AddBot(*user); err != nil {
-		return err
-	}
-	if a.store.Count() == 1 {
-		a.setActiveBotID(user.BotID)
+		return "", err
 	}
 	a.startMonitor(user.BotID)
-	return nil
+	return user.BotID, nil
 }
 
-func (a *App) PrintBots() {
-	fmt.Println("Logged in bots:")
-	activeBotID := a.ActiveBotID()
+func (a *App) PrintBots(activeBotID string, out io.Writer) {
+	fmt.Fprintln(out, "Logged in bots:")
 	for _, entry := range a.store.ListBots() {
 		mark := " "
 		if entry.BotID == activeBotID {
 			mark = "*"
 		}
-		fmt.Printf("  %d) [%s] BotID: %s  |  APIToken: %s\n", entry.Index, mark, entry.BotID, entry.User.APIToken)
+		fmt.Fprintf(out, "  %d) [%s] BotID: %s  |  APIToken: %s\n", entry.Index, mark, entry.BotID, entry.User.APIToken)
 	}
 }
 
-func (a *App) SelectBot(idx int) {
+func (a *App) SelectBot(idx int, out io.Writer) (string, bool) {
 	for _, entry := range a.store.ListBots() {
 		if entry.Index == idx {
-			a.setActiveBotID(entry.BotID)
-			fmt.Printf("Active bot changed to: %s\n", entry.BotID)
-			return
+			fmt.Fprintf(out, "Active bot changed to: %s\n", entry.BotID)
+			return entry.BotID, true
 		}
 	}
-	fmt.Println("Invalid bot index.")
+	fmt.Fprintln(out, "Invalid bot index.")
+	return "", false
 }
 
-func (a *App) DeleteBot(idx int) {
+func (a *App) DeleteBot(idx int, out io.Writer) (string, bool) {
 	botID, ok, err := a.store.DeleteBotByIndex(idx)
 	if err != nil {
-		fmt.Printf("Delete bot failed: %v\n", err)
-		return
+		fmt.Fprintf(out, "Delete bot failed: %v\n", err)
+		return "", false
 	}
 	if !ok {
-		fmt.Println("Invalid bot index.")
-		return
+		fmt.Fprintln(out, "Invalid bot index.")
+		return "", false
 	}
-
-	if a.ActiveBotID() == botID {
-		a.setActiveBotID("")
-	}
-	fmt.Printf("Bot deleted: %s\n", botID)
+	fmt.Fprintf(out, "Bot deleted: %s\n", botID)
+	return botID, true
 }
 
-func (a *App) SendText(text string) error {
-	activeBotID := a.ActiveBotID()
-	user, exists := a.store.GetBot(activeBotID)
+func (a *App) SendText(botID string, text string) error {
+	user, exists := a.store.GetBot(botID)
 	if !exists {
 		return errors.New("No active bot selected. Type '/bots' to select.")
 	}
@@ -163,12 +159,6 @@ func (a *App) SendText(text string) error {
 		return fmt.Errorf("Send failed: %w", err)
 	}
 	return nil
-}
-
-func (a *App) setActiveBotID(botID string) {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-	a.activeBot = botID
 }
 
 func (a *App) handleShutdownSignal() {
@@ -264,3 +254,7 @@ func (a *App) printMessages(botID string, messages []ilink.WeixinMessage) {
 }
 
 var _ console.Controller = (*App)(nil)
+
+func isTerminal(file *os.File) bool {
+	return term.IsTerminal(int(file.Fd()))
+}

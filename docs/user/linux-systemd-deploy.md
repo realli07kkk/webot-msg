@@ -59,10 +59,22 @@ sudo systemctl status webot-msg
 ./scripts/linux-service.sh status
 ```
 
-service 使用 `-c` 指向安装时解析出的默认配置文件绝对路径，例如：
+service 固定读取 `~/.webot-msg/config/webot-msg.toml`，`ExecStart` 不再传配置路径参数，例如：
 
 ```text
-ExecStart=/path/to/repo/bin/webot-msg -c /home/deploy/.webot-msg/config/webot-msg.toml
+ExecStart=/path/to/repo/bin/webot-msg
+```
+
+进入 systemd 服务的控制台时，不要再直接启动一个新的 `webot-msg` 实例。应连接正在运行服务暴露的本地 socket：
+
+```bash
+./bin/webot-msg console
+```
+
+在控制台里执行 `/login` 可以扫码添加 bot。`/exit` 或 `/quit` 只退出这次控制台连接，服务继续运行。真正停止进程仍使用：
+
+```bash
+./scripts/linux-service.sh stop
 ```
 
 ## 升级
@@ -73,8 +85,8 @@ ExecStart=/path/to/repo/bin/webot-msg -c /home/deploy/.webot-msg/config/webot-ms
 
 升级动作会先用 `systemctl is-active` 判断 `webot-msg` 是否正在运行：
 
-- 如果服务处于 `active`，脚本会先 `stop`，再编译替换 `bin/webot-msg`，成功后重新 `start`
-- 如果服务不是 `active`，脚本只编译替换 `bin/webot-msg`，不会自动启动
+- 如果服务处于 `active`，脚本会先 `stop`，再编译替换 `bin/webot-msg`，刷新 `/etc/systemd/system/webot-msg.service`，执行 `daemon-reload`，成功后重新 `start`
+- 如果服务不是 `active`，脚本会编译替换 `bin/webot-msg`，刷新 systemd unit 并 `daemon-reload`，但不会自动启动
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
@@ -88,6 +100,9 @@ port = 26322
 
 [storage]
 auth_path = "~/.webot-msg/config/auth.json"
+
+[control]
+socket_path = "~/.webot-msg/webot-msg.sock"
 
 [ilink]
 base_url = "https://ilinkai.weixin.qq.com"

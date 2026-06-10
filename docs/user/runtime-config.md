@@ -3,8 +3,8 @@ doc_type: user-guide
 slug: runtime-config
 component: 2026-06-10-runtime-toml-config
 status: current
-summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、iLink 地址和日志文件策略
-tags: [config, cli, logging]
+summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址和日志文件策略
+tags: [config, cli, control-console, logging]
 last_reviewed: 2026-06-10
 ---
 
@@ -12,9 +12,9 @@ last_reviewed: 2026-06-10
 
 ## 功能简介
 
-`webot-msg` 启动时可以通过 `-c` 读取 TOML 配置文件，用来调整本地 API 端口、auth store 路径、iLink BaseURL、日志文件路径和日志大小上限。
+`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径和日志大小上限。
 
-不传 `-c` 时，程序不会尝试读取默认配置文件，而是直接使用内置默认值。默认数据统一放在 `~/.webot-msg/` 下。
+如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。`-c` 仍可用于旧脚本或临时调试，但部署脚本和推荐用法都使用默认路径，避免 service 和 console 读取不同配置。
 
 ## 前置条件
 
@@ -39,6 +39,9 @@ port = 26322
 [storage]
 auth_path = "~/.webot-msg/config/auth.json"
 
+[control]
+socket_path = "~/.webot-msg/webot-msg.sock"
+
 [ilink]
 base_url = "https://ilinkai.weixin.qq.com"
 
@@ -47,25 +50,34 @@ file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
 ```
 
-3. 使用配置文件启动：
+3. 启动服务：
 
 ```bash
-go run ./cmd/webot-msg -c ~/.webot-msg/config/webot-msg.toml
+go run ./cmd/webot-msg
 ```
 
 构建后启动：
 
 ```bash
-./bin/webot-msg -c ~/.webot-msg/config/webot-msg.toml
+./bin/webot-msg
 ```
 
 4. 临时覆盖端口：
 
 ```bash
-./bin/webot-msg -c ~/.webot-msg/config/webot-msg.toml -port 8080
+./bin/webot-msg -port 8080
 ```
 
-同时传 `-c` 和显式 `-port` 时，`-port` 优先生效。
+显式 `-port` 会临时覆盖 TOML 里的 `api.port`。
+
+兼容旧脚本时，也可以显式指定配置文件：
+
+```bash
+./bin/webot-msg -c /path/to/webot-msg.toml
+./bin/webot-msg console -c /path/to/webot-msg.toml
+```
+
+如果 service 使用了自定义 `-c`，进入控制台时必须传同一份配置，否则可能连接到另一套 control socket。
 
 ## 配置项
 
@@ -73,6 +85,7 @@ go run ./cmd/webot-msg -c ~/.webot-msg/config/webot-msg.toml
 |---|---|---|
 | `api.port` | `26322` | 改成 `1` 到 `65535` 之间的端口；也可以启动时用 `-port` 临时覆盖 |
 | `storage.auth_path` | `~/.webot-msg/config/auth.json` | 改成 auth store JSON 文件路径；支持 `~` 开头的 home 路径 |
+| `control.socket_path` | `~/.webot-msg/webot-msg.sock` | 本地控制台连接正在运行服务的 Unix socket 路径；支持 `~` 开头的 home 路径 |
 | `ilink.base_url` | `https://ilinkai.weixin.qq.com` | 只接受 `http://` 或 `https://` 地址，必须包含 host |
 | `log.file_path` | `~/.webot-msg/logs/webot-msg.log` | 改成标准日志输出文件路径；设为空字符串可以关闭文件日志 |
 | `log.max_size` | `100MB` | 支持 `B`、`KB`、`MB`、`GB`、`TB`，大小写不敏感，例如 `"10MB"`、`"1GB"` |
@@ -88,6 +101,7 @@ go run ./cmd/webot-msg -c ~/.webot-msg/config/webot-msg.toml
     webot-msg.toml
   logs/
     webot-msg.log
+  webot-msg.sock
 ```
 
 升级后，如果你没有显式配置 `storage.auth_path`，并且旧的 `./config/auth.json` 存在、新的 `~/.webot-msg/config/auth.json` 不存在，程序启动时会把旧文件原样复制到新默认路径。
@@ -109,9 +123,9 @@ go run ./cmd/webot-msg -c ~/.webot-msg/config/webot-msg.toml
 
 ## 常见问题
 
-Q: 不传 `-c` 会自动读取 `~/.webot-msg/config/webot-msg.toml` 吗？
+Q: 可以用 `-c` 指向另一份配置吗？
 
-A: 不会。不传 `-c` 时只使用内置默认值。要读取 TOML，必须显式传 `-c`。
+A: 可以，`-c` 作为兼容入口保留。但推荐保持默认路径，尤其是 systemd 部署场景；如果 service 使用自定义配置，`webot-msg console` 也必须使用同一份配置。
 
 Q: 配置里写错字段名会怎样？
 
@@ -137,8 +151,18 @@ Q: 怎么只临时换端口，不改 TOML？
 A: 启动时传 `-port`：
 
 ```bash
-./bin/webot-msg -c ~/.webot-msg/config/webot-msg.toml -port 19090
+./bin/webot-msg -port 19090
 ```
+
+Q: systemd 启动后怎么进入控制台？
+
+A: 用同一份配置连接本地控制台 socket：
+
+```bash
+./bin/webot-msg console
+```
+
+控制台内 `/exit` 或 `/quit` 只退出这次控制台连接，不会停止 systemd 服务。停止服务仍使用 `systemctl stop webot-msg` 或部署脚本的 `stop`。
 
 ## 相关功能
 

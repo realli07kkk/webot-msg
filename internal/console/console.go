@@ -3,6 +3,7 @@ package console
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -16,31 +17,36 @@ const (
 )
 
 type Controller interface {
-	ActiveBotID() string
-	Login() error
-	PrintBots()
-	SelectBot(idx int)
-	DeleteBot(idx int)
-	SendText(text string) error
+	DefaultBotID() string
+	Login(out io.Writer) (string, error)
+	PrintBots(activeBotID string, out io.Writer)
+	SelectBot(idx int, out io.Writer) (string, bool)
+	DeleteBot(idx int, out io.Writer) (string, bool)
+	SendText(botID string, text string) error
 }
 
 func Run(controller Controller) ExitReason {
-	reader := bufio.NewReader(os.Stdin)
+	return RunWithIO(controller, os.Stdin, os.Stdout)
+}
 
-	fmt.Println("\nConsole commands:")
-	fmt.Println("  /login       - Scan QR code to add a new user/bot.")
-	fmt.Println("  /bots        - List all logged-in bots and select active one.")
-	fmt.Println("  /bot <num>   - Select bot by list index.")
-	fmt.Println("  /del <num>   - Delete bot by list index.")
-	fmt.Println("  /exit        - Save config and exit.")
-	fmt.Println("  /quit        - Save config and exit.")
-	fmt.Println("  [Text]       - Send message using active user to themselves.")
+func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
+	reader := bufio.NewReader(in)
+	activeBotID := controller.DefaultBotID()
+
+	fmt.Fprintln(out, "\nConsole commands:")
+	fmt.Fprintln(out, "  /login       - Scan QR code to add a new user/bot.")
+	fmt.Fprintln(out, "  /bots        - List all logged-in bots and select active one.")
+	fmt.Fprintln(out, "  /bot <num>   - Select bot by list index.")
+	fmt.Fprintln(out, "  /del <num>   - Delete bot by list index.")
+	fmt.Fprintln(out, "  /exit        - Exit this console session.")
+	fmt.Fprintln(out, "  /quit        - Exit this console session.")
+	fmt.Fprintln(out, "  [Text]       - Send message using active user to themselves.")
 
 	for {
-		if activeBotID := controller.ActiveBotID(); activeBotID == "" {
-			fmt.Print("[No Bot Selected] > ")
+		if activeBotID == "" {
+			fmt.Fprint(out, "[No Bot Selected] > ")
 		} else {
-			fmt.Printf("[%s] > ", activeBotID)
+			fmt.Fprintf(out, "[%s] > ", activeBotID)
 		}
 
 		text, err := reader.ReadString('\n')
@@ -57,15 +63,18 @@ func Run(controller Controller) ExitReason {
 		}
 
 		if text == "/login" {
-			if err := controller.Login(); err != nil {
-				fmt.Printf("QR login failed: %v\n", err)
+			botID, err := controller.Login(out)
+			if err != nil {
+				fmt.Fprintf(out, "QR login failed: %v\n", err)
+			} else if activeBotID == "" {
+				activeBotID = botID
 			}
 			continue
 		}
 
 		if text == "/bots" {
-			controller.PrintBots()
-			fmt.Print("Enter number to select (or enter to cancel): ")
+			controller.PrintBots(activeBotID, out)
+			fmt.Fprint(out, "Enter number to select (or enter to cancel): ")
 			numStr, err := reader.ReadString('\n')
 			if err != nil {
 				return ExitReasonInputClosed
@@ -73,7 +82,9 @@ func Run(controller Controller) ExitReason {
 			numStr = strings.TrimSpace(numStr)
 			if numStr != "" {
 				if idx, err := strconv.Atoi(numStr); err == nil {
-					controller.SelectBot(idx)
+					if botID, ok := controller.SelectBot(idx, out); ok {
+						activeBotID = botID
+					}
 				}
 			}
 			continue
@@ -83,7 +94,9 @@ func Run(controller Controller) ExitReason {
 			parts := strings.Fields(text)
 			if len(parts) > 1 {
 				if idx, err := strconv.Atoi(parts[1]); err == nil {
-					controller.SelectBot(idx)
+					if botID, ok := controller.SelectBot(idx, out); ok {
+						activeBotID = botID
+					}
 				}
 			}
 			continue
@@ -93,20 +106,22 @@ func Run(controller Controller) ExitReason {
 			parts := strings.Fields(text)
 			if len(parts) > 1 {
 				if idx, err := strconv.Atoi(parts[1]); err == nil {
-					controller.DeleteBot(idx)
+					if botID, ok := controller.DeleteBot(idx, out); ok && botID == activeBotID {
+						activeBotID = ""
+					}
 				}
 			}
 			continue
 		}
 
 		if strings.HasPrefix(text, "/") {
-			fmt.Println("Command not recognized, treating as text msg...")
+			fmt.Fprintln(out, "Command not recognized, treating as text msg...")
 		}
 
-		if err := controller.SendText(text); err != nil {
-			fmt.Println(err)
+		if err := controller.SendText(activeBotID, text); err != nil {
+			fmt.Fprintln(out, err)
 		} else {
-			fmt.Println("Send success!")
+			fmt.Fprintln(out, "Send success!")
 		}
 	}
 }

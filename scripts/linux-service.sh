@@ -23,7 +23,7 @@ Usage: $0 <command>
 
 Commands:
   install   Build bin/${SERVICE_NAME}, create ~/.webot-msg, and install systemd service
-  upgrade   Stop running service if active, replace bin/${SERVICE_NAME}, and restart only if it was active
+  upgrade   Stop running service if active, replace bin/${SERVICE_NAME}, refresh systemd unit, and restart only if it was active
   start     Run systemctl start ${SERVICE_NAME}
   stop      Run systemctl stop ${SERVICE_NAME}
   restart   Run systemctl restart ${SERVICE_NAME}
@@ -181,6 +181,9 @@ port = 26322
 [storage]
 auth_path = "~/.webot-msg/config/auth.json"
 
+[control]
+socket_path = "~/.webot-msg/webot-msg.sock"
+
 [ilink]
 base_url = "https://ilinkai.weixin.qq.com"
 
@@ -223,7 +226,7 @@ Type=simple
 User=${DEPLOY_USER}
 Group=${DEPLOY_GROUP}
 WorkingDirectory=${REPO_ROOT}
-ExecStart=${BINARY_PATH} -c ${CONFIG_PATH}
+ExecStart=${BINARY_PATH}
 Restart=on-failure
 RestartSec=5s
 
@@ -279,15 +282,17 @@ cmd_upgrade() {
 	require_command go
 	resolve_deploy_identity
 	print_paths
+	require_sudo
 
 	if [[ "${was_active}" -eq 1 ]]; then
-		require_sudo
 		stop_service
 	else
 		info "${SERVICE_NAME} is not active; upgrade will not start it"
 	fi
 
 	build_binary
+	write_service_unit
+	daemon_reload
 
 	if [[ "${was_active}" -eq 1 ]]; then
 		start_service

@@ -55,6 +55,10 @@ func NewClient(baseURL string) *Client {
 }
 
 func (c *Client) QRLogin() (*config.UserConfig, error) {
+	return c.QRLoginWithWriter(os.Stdout)
+}
+
+func (c *Client) QRLoginWithWriter(out io.Writer) (*config.UserConfig, error) {
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 
 outer:
@@ -74,8 +78,8 @@ outer:
 		}
 		resp.Body.Close()
 
-		qrterminal.GenerateHalfBlock(qrRes.QRcodeImgContent, qrterminal.L, os.Stdout)
-		fmt.Println("Please scan the QR code to log in")
+		qrterminal.GenerateHalfBlock(qrRes.QRcodeImgContent, qrterminal.L, out)
+		fmt.Fprintln(out, "Please scan the QR code to log in")
 
 		for {
 			statusReq, err := http.NewRequest("GET", c.endpoint("/ilink/bot/get_qrcode_status?qrcode="+url.QueryEscape(qrRes.QRcode)), nil)
@@ -106,12 +110,12 @@ outer:
 			switch statusRes.Status {
 			case "wait":
 			case "scaned":
-				fmt.Println("Scanned, please confirm on your phone...")
+				fmt.Fprintln(out, "Scanned, please confirm on your phone...")
 			case "expired":
-				fmt.Println("QR code expired, refreshing...")
+				fmt.Fprintln(out, "QR code expired, refreshing...")
 				continue outer
 			case "confirmed":
-				fmt.Println("Login confirmed! BotID:", statusRes.IlinkBotID)
+				fmt.Fprintln(out, "Login confirmed! BotID:", statusRes.IlinkBotID)
 				apiToken, err := config.GenerateToken(16)
 				if err != nil {
 					return nil, err

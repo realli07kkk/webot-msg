@@ -30,11 +30,20 @@ func TestLoadFileMergesDefaults(t *testing.T) {
 	if cfg.Ilink.BaseURL != ilink.DefaultBaseURL {
 		t.Fatalf("Ilink.BaseURL = %q, want %q", cfg.Ilink.BaseURL, ilink.DefaultBaseURL)
 	}
+	if cfg.Control.SocketPath != DefaultControlSocketPath {
+		t.Fatalf("Control.SocketPath = %q, want %q", cfg.Control.SocketPath, DefaultControlSocketPath)
+	}
 	if cfg.Log.FilePath != DefaultLogPath {
 		t.Fatalf("Log.FilePath = %q, want %q", cfg.Log.FilePath, DefaultLogPath)
 	}
 	if cfg.Log.MaxSize != DefaultLogMaxSize {
 		t.Fatalf("Log.MaxSize = %q, want %q", cfg.Log.MaxSize, DefaultLogMaxSize)
+	}
+}
+
+func TestDefaultConfigPath(t *testing.T) {
+	if DefaultConfigPath != "~/.webot-msg/config/webot-msg.toml" {
+		t.Fatalf("DefaultConfigPath = %q", DefaultConfigPath)
 	}
 }
 
@@ -96,6 +105,10 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	if resolved.Log.FilePath != wantLogPath {
 		t.Fatalf("Log.FilePath = %q, want %q", resolved.Log.FilePath, wantLogPath)
 	}
+	wantSocketPath := filepath.Join(home, ".webot-msg", "webot-msg.sock")
+	if resolved.Control.SocketPath != wantSocketPath {
+		t.Fatalf("Control.SocketPath = %q, want %q", resolved.Control.SocketPath, wantSocketPath)
+	}
 	if resolved.Log.MaxSizeBytes != 1024*1024*1024 {
 		t.Fatalf("Log.MaxSizeBytes = %d, want %d", resolved.Log.MaxSizeBytes, int64(1024*1024*1024))
 	}
@@ -140,6 +153,7 @@ func TestPrepareStorageCopiesLegacyAuth(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, ".webot-msg", "logs")); err != nil {
 		t.Fatalf("stat log dir: %v", err)
 	}
+	assertPerm(t, filepath.Join(home, ".webot-msg"), 0700)
 }
 
 func TestPrepareStorageDoesNotOverwriteExistingAuth(t *testing.T) {
@@ -212,6 +226,31 @@ func TestPrepareStorageKeepsExplicitLegacyAuthPath(t *testing.T) {
 	assertPerm(t, filepath.FromSlash("./config"), 0700)
 }
 
+func TestPrepareStorageDoesNotChmodCustomControlSocketDir(t *testing.T) {
+	root := t.TempDir()
+	home := t.TempDir()
+	customSocketDir := filepath.Join(root, "shared")
+	chdir(t, root)
+	setHomeDir(t, home)
+
+	if err := os.MkdirAll(customSocketDir, 0755); err != nil {
+		t.Fatalf("mkdir custom socket dir: %v", err)
+	}
+
+	cfg := Default()
+	cfg.Control.SocketPath = filepath.Join(customSocketDir, "webot-msg.sock")
+	resolved, err := cfg.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	if _, err := resolved.PrepareStorage(); err != nil {
+		t.Fatalf("PrepareStorage() error = %v", err)
+	}
+
+	assertPerm(t, customSocketDir, 0755)
+}
+
 func TestResolveRejectsInvalidValues(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -252,6 +291,13 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 				cfg.Storage.AuthPath = ""
 			},
 			wantErr: "storage.auth_path",
+		},
+		{
+			name: "empty control socket path",
+			update: func(cfg *Config) {
+				cfg.Control.SocketPath = ""
+			},
+			wantErr: "control.socket_path",
 		},
 		{
 			name: "invalid log max size",

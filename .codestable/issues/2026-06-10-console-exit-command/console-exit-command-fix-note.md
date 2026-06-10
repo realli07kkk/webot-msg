@@ -37,3 +37,7 @@ tags: [cli, console, shutdown]
 ## 6. 遗留事项
 
 `webot-msg login` 中的 `login` 目前不是正式子命令，现有 `main` 只解析 flag 并忽略额外参数。如果目标是“一次性扫码登录后自动退出”的子命令，需要另开 feature 或 issue 明确定义 CLI 子命令语义。
+
+## 7. 后续修正
+
+2026-06-10 后续 feature 已修正本记录中的退出语义：`/exit` 和 `/quit` 不再表示“保存配置并退出服务进程”，而是只退出当前控制台会话。systemd 部署下通过 `webot-msg console` 连接运行中的服务；真正停止进程仍由 systemd `stop` 管理。
