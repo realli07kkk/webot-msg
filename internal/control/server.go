@@ -3,10 +3,12 @@ package control
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/console"
@@ -49,9 +51,38 @@ func (s *Server) acceptLoop() {
 
 		go func() {
 			defer conn.Close()
-			console.RunWithIO(s.controller, conn, conn)
+			out := newSynchronizedWriter(conn)
+			unregister := registerConsoleOutput(s.controller, out)
+			defer unregister()
+			console.RunWithIO(s.controller, conn, out)
 		}()
 	}
+}
+
+type consoleOutputController interface {
+	AddConsoleOutput(io.Writer) func()
+}
+
+func registerConsoleOutput(controller console.Controller, out io.Writer) func() {
+	if controller, ok := controller.(consoleOutputController); ok {
+		return controller.AddConsoleOutput(out)
+	}
+	return func() {}
+}
+
+type synchronizedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func newSynchronizedWriter(w io.Writer) *synchronizedWriter {
+	return &synchronizedWriter{w: w}
+}
+
+func (w *synchronizedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
 }
 
 func listenUnixSocket(socketPath string) (net.Listener, error) {

@@ -66,8 +66,9 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 			botID, err := controller.Login(out)
 			if err != nil {
 				fmt.Fprintf(out, "QR login failed: %v\n", err)
-			} else if activeBotID == "" {
+			} else {
 				activeBotID = botID
+				fmt.Fprintf(out, "Active bot changed to: %s\n", botID)
 			}
 			continue
 		}

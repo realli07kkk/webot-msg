@@ -1,6 +1,8 @@
 package control
 
 import (
+	"bytes"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -57,6 +59,59 @@ func TestListenUnixSocketRejectsRegularFile(t *testing.T) {
 	}
 	if string(data) != "not a socket" {
 		t.Fatalf("regular file data = %q, want preserved", string(data))
+	}
+}
+
+func TestSynchronizedWriterSerializesWrites(t *testing.T) {
+	var buf bytes.Buffer
+	writer := newSynchronizedWriter(&buf)
+
+	if _, err := writer.Write([]byte("one")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if _, err := writer.Write([]byte("two")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got := buf.String(); got != "onetwo" {
+		t.Fatalf("buffer = %q, want onetwo", got)
+	}
+}
+
+func TestRegisterConsoleOutputUsesSupportedController(t *testing.T) {
+	controller := &broadcastController{}
+
+	unregister := registerConsoleOutput(controller, io.Discard)
+
+	if !controller.registered {
+		t.Fatal("registerConsoleOutput did not register supported controller")
+	}
+	unregister()
+	if !controller.unregistered {
+		t.Fatal("registerConsoleOutput unregister did not call cleanup")
+	}
+}
+
+type broadcastController struct {
+	registered   bool
+	unregistered bool
+}
+
+func (c *broadcastController) DefaultBotID() string { return "" }
+
+func (c *broadcastController) Login(io.Writer) (string, error) { return "", nil }
+
+func (c *broadcastController) PrintBots(string, io.Writer) {}
+
+func (c *broadcastController) SelectBot(int, io.Writer) (string, bool) { return "", false }
+
+func (c *broadcastController) DeleteBot(int, io.Writer) (string, bool) { return "", false }
+
+func (c *broadcastController) SendText(string, string) error { return nil }
+
+func (c *broadcastController) AddConsoleOutput(io.Writer) func() {
+	c.registered = true
+	return func() {
+		c.unregistered = true
 	}
 }
 

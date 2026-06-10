@@ -27,6 +27,10 @@ type App struct {
 
 	monitorMu       sync.Mutex
 	runningMonitors map[string]struct{}
+
+	consoleOutputMu     sync.Mutex
+	consoleOutputs      map[int]io.Writer
+	nextConsoleOutputID int
 }
 
 func New(configPath string, baseURL string, controlSocketPath string) *App {
@@ -35,6 +39,7 @@ func New(configPath string, baseURL string, controlSocketPath string) *App {
 		client:            ilink.NewClient(baseURL),
 		controlSocketPath: controlSocketPath,
 		runningMonitors:   make(map[string]struct{}),
+		consoleOutputs:    make(map[int]io.Writer),
 	}
 }
 
@@ -161,6 +166,42 @@ func (a *App) SendText(botID string, text string) error {
 	return nil
 }
 
+func (a *App) AddConsoleOutput(out io.Writer) func() {
+	if out == nil {
+		return func() {}
+	}
+
+	a.consoleOutputMu.Lock()
+	if a.consoleOutputs == nil {
+		a.consoleOutputs = make(map[int]io.Writer)
+	}
+	id := a.nextConsoleOutputID
+	a.nextConsoleOutputID++
+	a.consoleOutputs[id] = out
+	a.consoleOutputMu.Unlock()
+
+	return func() {
+		a.consoleOutputMu.Lock()
+		delete(a.consoleOutputs, id)
+		a.consoleOutputMu.Unlock()
+	}
+}
+
+func (a *App) broadcastConsoleOutput(text string) {
+	a.consoleOutputMu.Lock()
+	outputs := make([]io.Writer, 0, len(a.consoleOutputs))
+	for _, out := range a.consoleOutputs {
+		outputs = append(outputs, out)
+	}
+	a.consoleOutputMu.Unlock()
+
+	for _, out := range outputs {
+		if _, err := io.WriteString(out, text); err != nil {
+			log.Printf("Control console message broadcast failed: %v", err)
+		}
+	}
+}
+
 func (a *App) handleShutdownSignal() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -196,6 +237,8 @@ func (a *App) monitorWeixin(botID string) {
 
 	fmt.Printf("[Bot: %s] Started listening for messages...\n", botID)
 	timeoutMs := 35000
+	lastUpdateErr := ""
+	var lastUpdateErrAt time.Time
 
 	for {
 		user, exists := a.store.GetBot(botID)
@@ -206,9 +249,17 @@ func (a *App) monitorWeixin(botID string) {
 
 		updateRes, err := a.client.GetUpdates(user, time.Duration(timeoutMs+10000)*time.Millisecond)
 		if err != nil {
+			errText := err.Error()
+			if errText != lastUpdateErr || time.Since(lastUpdateErrAt) >= time.Minute {
+				log.Printf("[Bot: %s] Get updates failed: %v", botID, err)
+				lastUpdateErr = errText
+				lastUpdateErrAt = time.Now()
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}
+		lastUpdateErr = ""
+		lastUpdateErrAt = time.Time{}
 
 		if updateRes.LongpollingTimeoutMs > 0 {
 			timeoutMs = updateRes.LongpollingTimeoutMs
@@ -228,11 +279,17 @@ func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse)
 		}
 
 		for _, msg := range updateRes.Msgs {
-			if msg.FromUserID == "" || msg.ContextToken == "" || user.ContextToken == msg.ContextToken {
+			if msg.FromUserID == "" || msg.ContextToken == "" {
 				continue
 			}
-			user.ContextToken = msg.ContextToken
-			changed = true
+			if user.IlinkUserID != msg.FromUserID {
+				user.IlinkUserID = msg.FromUserID
+				changed = true
+			}
+			if user.ContextToken != msg.ContextToken {
+				user.ContextToken = msg.ContextToken
+				changed = true
+			}
 		}
 		return changed
 	})
@@ -244,11 +301,14 @@ func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse)
 func (a *App) printMessages(botID string, messages []ilink.WeixinMessage) {
 	for _, msg := range messages {
 		for _, item := range msg.ItemList {
+			var output string
 			if item.Type == 1 && item.TextItem.Text != "" {
-				fmt.Printf("\n[Bot: %s | Message from %s]: %s\n> ", botID, msg.FromUserID, item.TextItem.Text)
+				output = fmt.Sprintf("\n[Bot: %s | Message from %s]: %s\n> ", botID, msg.FromUserID, item.TextItem.Text)
 			} else {
-				fmt.Printf("\n[Bot: %s | Message from %s]: <Media/Other type %d>\n> ", botID, msg.FromUserID, item.Type)
+				output = fmt.Sprintf("\n[Bot: %s | Message from %s]: <Media/Other type %d>\n> ", botID, msg.FromUserID, item.Type)
 			}
+			fmt.Print(output)
+			a.broadcastConsoleOutput(output)
 		}
 	}
 }

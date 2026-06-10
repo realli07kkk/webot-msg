@@ -51,6 +51,22 @@ func TestRunKeepsActiveBotSessionLocal(t *testing.T) {
 	}
 }
 
+func TestRunSwitchesActiveBotAfterLogin(t *testing.T) {
+	controller := &fakeController{
+		defaultBotID: "old-bot",
+		loginBotID:   "new-bot",
+	}
+
+	got := runWithInput(t, "/login\nhello\n/exit\n", controller)
+
+	if got != ExitReasonCommand {
+		t.Fatalf("Run() = %v, want %v", got, ExitReasonCommand)
+	}
+	if got := controller.sentBotIDs; len(got) != 1 || got[0] != "new-bot" {
+		t.Fatalf("sentBotIDs = %#v, want [new-bot]", got)
+	}
+}
+
 func runWithInput(t *testing.T, input string, controller Controller) ExitReason {
 	t.Helper()
 
@@ -59,6 +75,7 @@ func runWithInput(t *testing.T, input string, controller Controller) ExitReason 
 
 type fakeController struct {
 	defaultBotID   string
+	loginBotID     string
 	selectBotIDs   map[int]string
 	sentBotIDs     []string
 	sendTextCalled bool
@@ -69,6 +86,9 @@ func (f *fakeController) DefaultBotID() string {
 }
 
 func (f *fakeController) Login(_ io.Writer) (string, error) {
+	if f.loginBotID != "" {
+		return f.loginBotID, nil
+	}
 	return "bot-1", nil
 }
 
