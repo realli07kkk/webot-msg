@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -17,29 +18,65 @@ import (
 	"github.com/realli07kkk/webot-msg/internal/console"
 	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
+	"github.com/realli07kkk/webot-msg/internal/protection"
+	"github.com/realli07kkk/webot-msg/internal/sender"
 	"golang.org/x/term"
 )
 
+type client interface {
+	QRLoginWithWriter(out io.Writer) (*config.UserConfig, error)
+	GetUpdates(user config.UserConfig, timeout time.Duration) (*ilink.UpdatesResponse, error)
+	SendMessage(user config.UserConfig, to string, text string, contextToken string) error
+	SendTyping(user config.UserConfig, status int) error
+}
+
+type Options struct {
+	AuthPath          string
+	BaseURL           string
+	ControlSocketPath string
+	Guard             protection.Guard
+	ProtectionEnabled bool
+	ReminderText      string
+	TimeCheckInterval time.Duration
+}
+
 type App struct {
 	store             *config.Store
-	client            *ilink.Client
+	client            client
 	controlSocketPath string
+	guard             protection.Guard
+	protectionEnabled bool
+	reminderText      string
+	timeCheckInterval time.Duration
 
-	monitorMu       sync.Mutex
-	runningMonitors map[string]struct{}
+	monitorMu                 sync.Mutex
+	runningMonitors           map[string]struct{}
+	runningProtectionCheckers map[string]struct{}
 
 	consoleOutputMu     sync.Mutex
 	consoleOutputs      map[int]io.Writer
 	nextConsoleOutputID int
 }
 
-func New(configPath string, baseURL string, controlSocketPath string) *App {
+func New(opts Options) *App {
+	guard := opts.Guard
+	if guard == nil {
+		guard = protection.NoopGuard{}
+	}
+	if opts.TimeCheckInterval <= 0 {
+		opts.TimeCheckInterval = time.Minute
+	}
 	return &App{
-		store:             config.NewStore(configPath),
-		client:            ilink.NewClient(baseURL),
-		controlSocketPath: controlSocketPath,
-		runningMonitors:   make(map[string]struct{}),
-		consoleOutputs:    make(map[int]io.Writer),
+		store:                     config.NewStore(opts.AuthPath),
+		client:                    ilink.NewClient(opts.BaseURL),
+		controlSocketPath:         opts.ControlSocketPath,
+		guard:                     guard,
+		protectionEnabled:         opts.ProtectionEnabled,
+		reminderText:              opts.ReminderText,
+		timeCheckInterval:         opts.TimeCheckInterval,
+		runningMonitors:           make(map[string]struct{}),
+		runningProtectionCheckers: make(map[string]struct{}),
+		consoleOutputs:            make(map[int]io.Writer),
 	}
 }
 
@@ -84,7 +121,7 @@ func (a *App) Run(port int) error {
 		a.startMonitor(botID)
 	}
 
-	apiServer := api.NewServer(a.store, a.client)
+	apiServer := api.NewServerWithClient(a.store, a.client, a.guard, a.reminderText)
 	go func() {
 		if err := apiServer.Start(port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("API server stopped: %v", err)
@@ -160,8 +197,20 @@ func (a *App) SendText(botID string, text string) error {
 		return errors.New("Active user has no message context to reply to. (Wait for one message or context is missing)")
 	}
 
-	if err := a.client.SendMessage(user, user.IlinkUserID, text, user.ContextToken); err != nil {
-		return fmt.Errorf("Send failed: %w", err)
+	_, err := sender.SendProtectedText(context.Background(), a.client, a.protectionGuard(), user, text, a.reminderText)
+	if err != nil {
+		if protection.IsRejection(err) {
+			return errors.New(protection.RejectionMessage(protection.RejectionReason(err)))
+		}
+		return err
+	}
+	return nil
+}
+
+func (a *App) sendProtectionReminder(ctx context.Context, user config.UserConfig, reason string) error {
+	_, err := sender.SendProtectionReminder(ctx, a.client, a.protectionGuard(), user, a.reminderText, reason)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -226,6 +275,63 @@ func (a *App) startMonitor(botID string) {
 	a.monitorMu.Unlock()
 
 	go a.monitorWeixin(botID)
+	a.startProtectionChecker(botID)
+}
+
+func (a *App) startProtectionChecker(botID string) {
+	if !a.protectionEnabled {
+		return
+	}
+
+	a.monitorMu.Lock()
+	if a.runningProtectionCheckers == nil {
+		a.runningProtectionCheckers = make(map[string]struct{})
+	}
+	if _, exists := a.runningProtectionCheckers[botID]; exists {
+		a.monitorMu.Unlock()
+		return
+	}
+	a.runningProtectionCheckers[botID] = struct{}{}
+	a.monitorMu.Unlock()
+
+	go a.monitorProtectionWindow(botID)
+}
+
+func (a *App) monitorProtectionWindow(botID string) {
+	defer func() {
+		a.monitorMu.Lock()
+		delete(a.runningProtectionCheckers, botID)
+		a.monitorMu.Unlock()
+	}()
+
+	ticker := time.NewTicker(a.timeCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		if !a.checkProtectionTimeWindowOnce(botID) {
+			return
+		}
+		<-ticker.C
+	}
+}
+
+func (a *App) checkProtectionTimeWindowOnce(botID string) bool {
+	user, exists := a.store.GetBot(botID)
+	if !exists {
+		return false
+	}
+
+	decision, err := a.protectionGuard().CheckTimeWindow(context.Background(), botID)
+	if err != nil {
+		log.Printf("[Bot: %s] Protection time window check failed: %v", botID, err)
+		return true
+	}
+	if decision.Kind == protection.DecisionSendReminderAndFreeze {
+		if err := a.sendProtectionReminder(context.Background(), user, decision.Reason); err != nil {
+			log.Printf("[Bot: %s] Protection reminder record failed: %v", botID, err)
+		}
+	}
+	return true
 }
 
 func (a *App) monitorWeixin(botID string) {
@@ -271,6 +377,7 @@ func (a *App) monitorWeixin(botID string) {
 }
 
 func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse) {
+	activeConversation := false
 	_, err := a.store.UpdateBot(botID, func(user *config.UserConfig) bool {
 		changed := false
 		if updateRes.GetUpdatesBuf != "" && user.GetUpdatesBuf != updateRes.GetUpdatesBuf {
@@ -282,6 +389,7 @@ func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse)
 			if msg.FromUserID == "" || msg.ContextToken == "" {
 				continue
 			}
+			activeConversation = true
 			if user.IlinkUserID != msg.FromUserID {
 				user.IlinkUserID = msg.FromUserID
 				changed = true
@@ -296,6 +404,18 @@ func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse)
 	if err != nil {
 		log.Printf("[Bot: %s] Save update state failed: %v", botID, err)
 	}
+	if activeConversation {
+		if err := a.protectionGuard().RecordActiveConversation(context.Background(), botID); err != nil {
+			log.Printf("[Bot: %s] Protection active conversation reset failed: %v", botID, err)
+		}
+	}
+}
+
+func (a *App) protectionGuard() protection.Guard {
+	if a.guard == nil {
+		return protection.NoopGuard{}
+	}
+	return a.guard
 }
 
 func (a *App) printMessages(botID string, messages []ilink.WeixinMessage) {

@@ -1,0 +1,156 @@
+feature: 2026-06-10-wechat-send-protection
+created: 2026-06-10
+
+steps:
+  - action: "编排骨架：新增保护配置与 no-op guard，让 API 和控制台发送入口都能经过同一层保护决策"
+    exit_signal: "保护关闭时所有现有发送测试仍通过，且未要求 Redis 配置"
+    status: done
+  - action: "Redis 状态计算：接入 go-redis，定义 per-bot key、Hash/String 状态和 Lua 脚本返回的 Decision"
+    exit_signal: "单元测试能覆盖主动对话重置、普通发送计数、冻结拒绝和 Redis 错误 fail closed"
+    status: done
+  - action: "计数限制提醒：普通发送成功累计到临界值时发送保护提醒，提醒成功后计数并冻结"
+    exit_signal: "第 9 条普通消息成功后触发提醒；之后普通发送被拒绝，直到主动对话"
+    status: done
+  - action: "24h 时间窗口提醒：新增 per-bot 检查器，按 TTL 判断是否进入提醒窗口"
+    exit_signal: "active TTL 进入 time_warning_before 后只发送一次提醒并冻结；重复检查不会重复提醒"
+    status: done
+  - action: "主动对话解冻：监听收到有效微信消息后重置 Redis 状态，并保持现有 auth store 上下文更新行为"
+    exit_signal: "冻结状态下收到主动消息后，下一次普通发送可继续执行并重新计数"
+    status: done
+  - action: "文档与验收覆盖：补齐 Runtime config 文档、部署默认配置样例和关键行为测试"
+    exit_signal: "go test ./... 通过，文档说明保护默认关闭、Redis 配置和冻结错误语义"
+    status: done
+
+checks:
+  - item: "Runtime config 新增 ProtectionConfig 与 RedisConfig，保护默认关闭，开启后解析 Redis URL、Redis password、限制数值和 duration 字段"
+    source: 名词契约
+    status: passed
+  - item: "保护状态包含 out_count、frozen、reason、reminder_pending、reminder_sent_ms 等字段，普通文本和提醒都计入 out_count"
+    source: 名词契约
+    status: passed
+  - item: "Guard 契约提供 ReserveNormalSend、ReleaseNormalSend、RecordReminderSend、RecordActiveConversation、CheckTimeWindow 五类编排入口"
+    source: 名词契约
+    status: passed
+  - item: "Redis key 使用 {prefix}:protect:{<botID>}:state 和 {prefix}:protect:{<botID>}:active，规则全局共用但状态按 botID 隔离"
+    source: 名词契约
+    status: passed
+  - item: "Redis state 使用 Hash，active 窗口使用带 TTL 的 String，主动对话重置设置 active key PX active_window"
+    source: 名词契约
+    status: passed
+  - item: "Redis 状态转换使用 Lua 脚本原子处理，不在 Go 侧用分散 GET/SET 拼接关键判断"
+    source: 流程级约束
+    status: passed
+  - item: "启动期根据 protection.enabled 决定是否创建 Redis client 与保护服务；保护关闭时不连接 Redis"
+    source: 编排骨架
+    status: passed
+  - item: "HTTP API 和控制台普通文本发送通过同一个发送编排接入保护服务"
+    source: 编排骨架
+    status: passed
+  - item: "monitorWeixin 收到有效主动消息后调用 RecordActiveConversation，解除冻结并重置计数与 24h TTL"
+    source: 编排骨架
+    status: passed
+  - item: "每个 bot 启动轻量时间窗口检查器，active TTL 进入 time_warning_before 时发送提醒并冻结"
+    source: 编排骨架
+    status: passed
+  - item: "保护提醒使用当前 bot 的 IlinkUserID 与 ContextToken 直接调用 iLink，不走普通发送 guard，成功后仍计数"
+    source: 编排骨架
+    status: passed
+  - item: "冻结期间 HTTP API 返回 429，响应包含 code、error 和可选 reason；控制台返回明确错误文本"
+    source: 流程级约束
+    status: passed
+  - item: "Redis 不可用、认证失败或保护状态不可读写时 fail closed，拒绝普通文本发送且不调用 iLink 发送用户原文"
+    source: 流程级约束
+    status: passed
+  - item: "普通文本发送前通过 ReserveNormalSend 原子预留额度；iLink 发送失败时调用 ReleaseNormalSend，失败请求不增加 out_count"
+    source: 流程级约束
+    status: passed
+  - item: "提醒发送失败时保持冻结，只记录非敏感错误类别，不清除 frozen"
+    source: 流程级约束
+    status: passed
+  - item: "日志只记录 botID、保护原因、Redis 错误类别和提醒结果，不记录 token、context token、Redis password 或用户原始消息正文"
+    source: 流程级约束
+    status: passed
+  - item: "挂载 TOML 配置 key：protection.enabled、message_limit、message_warning_remaining、active_window、time_warning_before、time_check_interval、reminder_text"
+    source: 挂载点
+    status: passed
+  - item: "挂载 TOML 配置 key：redis.url、redis.password、redis.key_prefix"
+    source: 挂载点
+    status: passed
+  - item: "挂载普通文本发送入口：HTTP API /bots/{botID}/messages 与控制台普通文本都经过共享保护服务"
+    source: 挂载点
+    status: passed
+  - item: "挂载主动对话事件：GetUpdates 返回有效 WeixinMessage 后重置保护状态"
+    source: 挂载点
+    status: passed
+  - item: "挂载时间窗口检查器：每个已登录 bot 的后台检查循环负责 24h 限制临界提醒"
+    source: 挂载点
+    status: passed
+  - item: "默认配置或 protection.enabled=false 且不配置 Redis 时，现有 HTTP/控制台文本发送行为不变，不连接 Redis"
+    source: 验收场景
+    status: passed
+  - item: "protection.enabled=true 但 redis.url 缺失、格式非法或 Redis 认证失败时，错误指向 Redis 配置且不泄露 password"
+    source: 验收场景
+    status: passed
+  - item: "redis.url 不含密码且 redis.password=secret 时，go-redis client 使用该 password 认证，启动日志不输出 password"
+    source: 验收场景
+    status: passed
+  - item: "redis.url 自带 password 且 redis.password 非空时，启动失败并提示 Redis password 配置冲突"
+    source: 验收场景
+    status: passed
+  - item: "保护开启且 Redis 可用时，用户刚从微信 app 发来消息后 Redis out_count=0、active TTL 约为 24h、frozen=0"
+    source: 验收场景
+    status: passed
+  - item: "主动对话后连续 8 条普通文本发送成功时，out_count=8，不发送提醒，不冻结"
+    source: 验收场景
+    status: passed
+  - item: "主动对话后第 9 条普通文本发送成功时，该普通消息成功、系统发送提醒、提醒计入下发次数，并设置 frozen=1 reason=count"
+    source: 验收场景
+    status: passed
+  - item: "bot-A 冻结不影响 bot-B；bot-B 继续按同一套规则独立计数并允许发送"
+    source: 验收场景
+    status: passed
+  - item: "frozen=1 reason=count 后调用 /bots/{botID}/messages 返回 HTTP 429，且 iLink sendmessage 不发送用户原文"
+    source: 验收场景
+    status: passed
+  - item: "frozen=1 后控制台输入普通文本时输出保护模式锁定错误，且不调用 iLink 发送用户原文"
+    source: 验收场景
+    status: passed
+  - item: "冻结后用户从微信 app 给机器人发消息时，auth store 更新最近上下文，Redis 清零计数、解除冻结并重设 24h TTL"
+    source: 验收场景
+    status: passed
+  - item: "active TTL 小于等于 time_warning_before 且未冻结时，后台检查器发送一次提醒并冻结，重复检查不会重复提醒"
+    source: 验收场景
+    status: passed
+  - item: "active key 缺失但保护模式开启时，普通文本发送被拒绝，并提示需要先从微信 app 发消息初始化保护状态"
+    source: 验收场景
+    status: passed
+  - item: "普通文本 iLink 发送失败时不增加 out_count，不因失败请求触发提醒"
+    source: 验收场景
+    status: passed
+  - item: "提醒 iLink 发送失败时普通发送保持冻结，日志只记录非敏感错误类别，后续普通发送仍被拒绝直到主动对话"
+    source: 验收场景
+    status: passed
+  - item: "调用 /bots/{botID}/typing 不计入 out_count，冻结状态不影响 typing"
+    source: 验收场景
+    status: passed
+  - item: "不绕过微信限制，不模拟或伪造用户从微信 app 发起的主动对话"
+    source: 范围守护
+    status: passed
+  - item: "不改变 iLink sendmessage 请求结构、消息类型或 ContextToken 获取方式"
+    source: 范围守护
+    status: passed
+  - item: "不把保护状态、Redis URL 或 Redis password 写入 auth store JSON"
+    source: 范围守护
+    status: passed
+  - item: "不改变 HTTP API 鉴权方式，不新增公网管理接口"
+    source: 范围守护
+    status: passed
+  - item: "不把 Redis password、BotToken、APIToken、ContextToken 或完整消息正文写入日志"
+    source: 范围守护
+    status: passed
+  - item: "不把 /bots/{botID}/typing 计入下发限制，也不在冻结期间阻止 typing"
+    source: 范围守护
+    status: passed
+  - item: "不支持多会话独立计数，继续沿用当前每个 bot 只保存最近一个 IlinkUserID/ContextToken 的会话模型"
+    source: 范围守护
+    status: passed

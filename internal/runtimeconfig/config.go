@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
@@ -20,17 +21,24 @@ const (
 	DefaultControlSocketPath = "~/.webot-msg/webot-msg.sock"
 	DefaultLogPath           = "~/.webot-msg/logs/webot-msg.log"
 	DefaultLogMaxSize        = "100MB"
+	DefaultRedisKeyPrefix    = "webot-msg"
+	DefaultActiveWindow      = "24h"
+	DefaultTimeWarningBefore = "30m"
+	DefaultTimeCheckInterval = "1m"
+	DefaultReminderText      = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
 	LegacyAuthPath           = "./config/auth.json"
 )
 
 var userHomeDir = os.UserHomeDir
 
 type Config struct {
-	API     APIConfig     `toml:"api"`
-	Storage StorageConfig `toml:"storage"`
-	Control ControlConfig `toml:"control"`
-	Ilink   IlinkConfig   `toml:"ilink"`
-	Log     LogConfig     `toml:"log"`
+	API        APIConfig        `toml:"api"`
+	Storage    StorageConfig    `toml:"storage"`
+	Control    ControlConfig    `toml:"control"`
+	Ilink      IlinkConfig      `toml:"ilink"`
+	Log        LogConfig        `toml:"log"`
+	Protection ProtectionConfig `toml:"protection"`
+	Redis      RedisConfig      `toml:"redis"`
 }
 
 type APIConfig struct {
@@ -55,6 +63,25 @@ type LogConfig struct {
 	MaxSizeBytes int64  `toml:"-"`
 }
 
+type ProtectionConfig struct {
+	Enabled                   bool          `toml:"enabled"`
+	MessageLimit              int           `toml:"message_limit"`
+	MessageWarningRemaining   int           `toml:"message_warning_remaining"`
+	ActiveWindow              string        `toml:"active_window"`
+	TimeWarningBefore         string        `toml:"time_warning_before"`
+	TimeCheckInterval         string        `toml:"time_check_interval"`
+	ReminderText              string        `toml:"reminder_text"`
+	ActiveWindowDuration      time.Duration `toml:"-"`
+	TimeWarningBeforeDuration time.Duration `toml:"-"`
+	TimeCheckIntervalDuration time.Duration `toml:"-"`
+}
+
+type RedisConfig struct {
+	URL       string `toml:"url"`
+	Password  string `toml:"password"`
+	KeyPrefix string `toml:"key_prefix"`
+}
+
 func Default() Config {
 	return Config{
 		API: APIConfig{
@@ -72,6 +99,18 @@ func Default() Config {
 		Log: LogConfig{
 			FilePath: DefaultLogPath,
 			MaxSize:  DefaultLogMaxSize,
+		},
+		Protection: ProtectionConfig{
+			Enabled:                 false,
+			MessageLimit:            10,
+			MessageWarningRemaining: 1,
+			ActiveWindow:            DefaultActiveWindow,
+			TimeWarningBefore:       DefaultTimeWarningBefore,
+			TimeCheckInterval:       DefaultTimeCheckInterval,
+			ReminderText:            DefaultReminderText,
+		},
+		Redis: RedisConfig{
+			KeyPrefix: DefaultRedisKeyPrefix,
 		},
 	}
 }
@@ -142,7 +181,68 @@ func (c Config) Resolve() (Config, error) {
 		resolved.Log.MaxSizeBytes = sizeBytes
 	}
 
+	if err := resolveProtection(&resolved); err != nil {
+		return Config{}, err
+	}
+
 	return resolved, nil
+}
+
+func resolveProtection(cfg *Config) error {
+	activeWindow, err := parsePositiveDuration(cfg.Protection.ActiveWindow)
+	if err != nil {
+		return fmt.Errorf("protection.active_window: %w", err)
+	}
+	timeWarningBefore, err := parsePositiveDuration(cfg.Protection.TimeWarningBefore)
+	if err != nil {
+		return fmt.Errorf("protection.time_warning_before: %w", err)
+	}
+	timeCheckInterval, err := parsePositiveDuration(cfg.Protection.TimeCheckInterval)
+	if err != nil {
+		return fmt.Errorf("protection.time_check_interval: %w", err)
+	}
+	if timeWarningBefore >= activeWindow {
+		return fmt.Errorf("protection.time_warning_before: must be shorter than active_window")
+	}
+	cfg.Protection.ActiveWindowDuration = activeWindow
+	cfg.Protection.TimeWarningBeforeDuration = timeWarningBefore
+	cfg.Protection.TimeCheckIntervalDuration = timeCheckInterval
+
+	if cfg.Protection.MessageLimit < 2 {
+		return fmt.Errorf("protection.message_limit: must be at least 2")
+	}
+	if cfg.Protection.MessageWarningRemaining < 1 || cfg.Protection.MessageWarningRemaining >= cfg.Protection.MessageLimit {
+		return fmt.Errorf("protection.message_warning_remaining: must be between 1 and message_limit-1")
+	}
+	if cfg.Protection.Enabled && strings.TrimSpace(cfg.Protection.ReminderText) == "" {
+		return fmt.Errorf("protection.reminder_text: must not be empty when protection is enabled")
+	}
+	if cfg.Redis.KeyPrefix == "" {
+		cfg.Redis.KeyPrefix = DefaultRedisKeyPrefix
+	}
+	if !cfg.Protection.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Redis.URL) == "" {
+		return fmt.Errorf("redis.url: must not be empty when protection is enabled")
+	}
+	redisURL, err := validateRedisURL(cfg.Redis.URL, cfg.Redis.Password)
+	if err != nil {
+		return err
+	}
+	cfg.Redis.URL = redisURL
+	return nil
+}
+
+func parsePositiveDuration(value string) (time.Duration, error) {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	return d, nil
 }
 
 func (c Config) PrepareStorage() (bool, error) {
@@ -288,6 +388,30 @@ func validateBaseURL(value string) (string, error) {
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", fmt.Errorf("scheme must be http or https")
+	}
+	return strings.TrimRight(value, "/"), nil
+}
+
+func validateRedisURL(value string, password string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("redis.url: must not be empty")
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("redis.url: invalid URL")
+	}
+	if parsed.Scheme != "redis" && parsed.Scheme != "rediss" {
+		return "", fmt.Errorf("redis.url: scheme must be redis or rediss")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("redis.url: host must not be empty")
+	}
+	if parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword && password != "" {
+			return "", fmt.Errorf("redis.password: must not be set when redis.url already contains a password")
+		}
 	}
 	return strings.TrimRight(value, "/"), nil
 }

@@ -1,12 +1,12 @@
 ---
 doc_type: requirement
 slug: bot-message-bridge
-pitch: 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话，并可通过 TOML 与 Linux systemd 脚本管理本地运行
+pitch: 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话，并可通过 TOML、可选发送保护和 Linux systemd 脚本管理本地运行
 status: current
 last_reviewed: 2026-06-10
 implemented_by:
   - architecture-overview
-tags: [bot, messaging, local-api, config, deploy, systemd]
+tags: [bot, messaging, local-api, config, deploy, systemd, protection, redis]
 ---
 
 # 本地登录微信 bot 并回复最近会话
@@ -19,16 +19,19 @@ tags: [bot, messaging, local-api, config, deploy, systemd]
 - 作为本地部署或调试工具的人，我希望能用 TOML 调整 API 端口、auth store 路径、iLink BaseURL 和日志文件策略，而不是改代码或依赖工作目录里的固定路径。
 - 作为用 systemd 部署服务的人，我希望能进入正在运行服务的控制台执行 `/login`，退出控制台时服务继续运行，而不是再启动一个新实例。
 - 作为在 Linux 机器上部署本工具的人，我希望能用脚本完成编译、默认配置落盘和 systemd service 安装/升级，而不是手动拼 service 文件和升级顺序。
+- 作为依赖微信主动对话限制发送消息的人，我希望能可选开启保护模式，在接近 10 次下发或 24h 主动对话窗口限制时收到提醒并冻结普通发送，避免工具继续误发。
 
 ## 为什么需要
 
-bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部署动作分散处理时，很容易把凭证、会话上下文、调试动作和部署差异混在一起。这个项目把它们收束到一个本地工具里，让开发者可以先登录 bot、等到消息上下文就绪，再从控制台或受保护 API 发出回复；运行参数通过独立 TOML 配置表达，Linux systemd 部署通过仓库脚本编排，不混入凭据文件。
+bot 登录态、消息上下文、发送入口、本地运行参数、微信侧发送限制和 Linux 部署动作分散处理时，很容易把凭证、会话上下文、调试动作、保护边界和部署差异混在一起。这个项目把它们收束到一个本地工具里，让开发者可以先登录 bot、等到消息上下文就绪，再从控制台或受保护 API 发出回复；运行参数通过独立 TOML 配置表达，Linux systemd 部署通过仓库脚本编排，不混入凭据文件。对需要长期自动化发送的场景，用户可以开启 Redis 支撑的保护模式，把微信侧“需要主动对话”的限制变成明确提醒和冻结，而不是让外部调用者盲目继续发送。
 
 ## 怎么解决
 
 用户扫码登录后，工具在本地保存可复用的 bot 配置，持续接收消息并记录最近可回复的会话上下文。需要发送时，用户可以在控制台输入文本，也可以让外部流程调用本地受保护入口，由工具代为把文本回复到当前上下文。systemd 部署下，用户通过 `webot-msg console` 连接运行中服务的本地 Unix socket，控制台退出不会停止 service。
 
 启动时，工具默认读取 `~/.webot-msg/config/webot-msg.toml`，配置 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径和日志大小上限；默认配置不存在时回退内置默认值。默认 auth store、日志文件与 control socket 统一落在 `~/.webot-msg/` 下，auth store JSON schema 不变。
+
+发送保护模式默认关闭。用户开启后，需要提供 Redis 连接信息；工具按 bot 记录最近主动对话后的普通文本和保护提醒下发次数，以及 24h 主动对话窗口。接近次数限制或时间窗口限制时，工具会给当前上下文发送保护提醒并冻结普通文本发送；用户从微信 App 主动给机器人发一条消息后，工具解除冻结并重置该 bot 的计数和窗口。
 
 在 Linux systemd 环境中，用户可以用 `scripts/linux-service.sh install` 编译 `bin/webot-msg`、安装 `/usr/local/bin/webot-msg`、创建 `~/.webot-msg/config/` 和 `~/.webot-msg/logs/`、首次写入默认 `webot-msg.toml`，并生成 `webot-msg.service`。升级时，脚本先按 `systemctl is-active` 记录服务是否运行：运行中则 stop、替换系统 PATH 中的二进制后再 start；未运行则只替换二进制。
 
@@ -46,6 +49,11 @@ bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部
 - Linux 部署脚本只面向 systemd 单实例，不提供 `.deb`、RPM、Docker、Ansible、多实例管理、备份或回滚。
 - 安装脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会删除或修改 `~/.webot-msg/config/auth.json`；服务操作需要部署者具备 sudo 权限。
 - 安装脚本固定把用户可执行命令安装到 `/usr/local/bin/webot-msg`，不提供安装前缀配置。
+- 发送保护模式默认关闭；开启后依赖 Redis 可用，Redis 不可用时普通文本发送会 fail closed。
+- 保护模式不绕过微信限制，也不模拟用户主动对话；解除冻结只能依赖微信 App 主动消息被监听到。
+- 保护模式按 bot 计数，不支持同一 bot 下多个会话分别计数；仍沿用最近一个 `IlinkUserID` / `ContextToken` 的会话模型。
+- `/bots/{botID}/typing` 不计入保护模式的下发次数，冻结状态也不阻止 typing。
+- Redis URL、Redis password 和保护状态不写入 auth store；真实 `redis.password` 属于本地部署凭据，不应提交。
 
 ## 变更记录
 
@@ -54,3 +62,4 @@ bot 登录态、消息上下文、发送入口、本地运行参数和 Linux 部
 - 2026-06-10：新增 `webot-msg console` 本地控制台入口，通过 Unix socket 进入 systemd 管理的运行中服务；`/exit` 和 `/quit` 只退出控制台连接，停止进程仍由 systemd 管理。
 - 2026-06-10：服务和控制台默认读取 `~/.webot-msg/config/webot-msg.toml`，同时保留 `-c` 兼容入口，避免破坏旧脚本。
 - 2026-06-10：Linux 部署脚本新增把二进制安装到 `/usr/local/bin/webot-msg`，让 `which webot-msg` 和 `webot-msg console` 在部署后直接可用。
+- 2026-06-10：新增默认关闭的微信发送保护模式；开启后用 Redis 按 bot 记录下发计数和 24h 主动对话窗口，在临界时发送保护提醒、冻结普通文本发送，并在微信 App 主动消息到达后重置。

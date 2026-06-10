@@ -213,6 +213,20 @@ base_url = "https://ilinkai.weixin.qq.com"
 [log]
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
+
+[protection]
+enabled = false
+message_limit = 10
+message_warning_remaining = 1
+active_window = "24h"
+time_warning_before = "30m"
+time_check_interval = "1m"
+reminder_text = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
+
+[redis]
+url = "redis://localhost:6379/0"
+password = "redis123456"
+key_prefix = "webot-msg"
 EOF
 
 	chmod 0600 "${tmp_config}" || {

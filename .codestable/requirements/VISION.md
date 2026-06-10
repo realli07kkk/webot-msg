@@ -12,7 +12,7 @@ tags: []
 
 ## Current
 
-- [bot-message-bridge](bot-message-bridge.md) — 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话，并可通过 TOML 与 Linux systemd 脚本管理本地运行。`status: current`
+- [bot-message-bridge](bot-message-bridge.md) — 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话，并可通过 TOML、可选发送保护和 Linux systemd 脚本管理本地运行。`status: current`
 
 ## Draft
 

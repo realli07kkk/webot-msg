@@ -23,7 +23,8 @@ func TestPersistUpdateStateStoresReplyTargetAndContextTogether(t *testing.T) {
 		t.Fatalf("AddBot() error = %v", err)
 	}
 
-	a := &App{store: store}
+	guard := &fakeGuard{}
+	a := &App{store: store, guard: guard}
 	a.persistUpdateState("bot-1", &ilink.UpdatesResponse{
 		GetUpdatesBuf: "buf-1",
 		Msgs: []ilink.WeixinMessage{
@@ -46,6 +47,9 @@ func TestPersistUpdateStateStoresReplyTargetAndContextTogether(t *testing.T) {
 	}
 	if user.GetUpdatesBuf != "buf-1" {
 		t.Fatalf("GetUpdatesBuf = %q, want %q", user.GetUpdatesBuf, "buf-1")
+	}
+	if guard.activeCalls != 1 {
+		t.Fatalf("RecordActiveConversation calls = %d, want 1", guard.activeCalls)
 	}
 }
 

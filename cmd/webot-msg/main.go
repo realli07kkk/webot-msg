@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -8,10 +9,12 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/app"
 	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/logfile"
+	"github.com/realli07kkk/webot-msg/internal/protection"
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
 )
 
@@ -52,7 +55,21 @@ func main() {
 		}
 	}
 
-	application := app.New(resolved.Storage.AuthPath, resolved.Ilink.BaseURL, resolved.Control.SocketPath)
+	guard, closeGuard, err := buildProtectionGuard(resolved)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer closeGuard()
+
+	application := app.New(app.Options{
+		AuthPath:          resolved.Storage.AuthPath,
+		BaseURL:           resolved.Ilink.BaseURL,
+		ControlSocketPath: resolved.Control.SocketPath,
+		Guard:             guard,
+		ProtectionEnabled: resolved.Protection.Enabled,
+		ReminderText:      resolved.Protection.ReminderText,
+		TimeCheckInterval: resolved.Protection.TimeCheckIntervalDuration,
+	})
 	if err := application.Run(resolved.API.Port); err != nil {
 		log.Fatal(err)
 	}
@@ -139,4 +156,31 @@ func loadRuntimeConfig(configPath string, configSet bool) (runtimeconfig.Config,
 		return runtimeconfig.Config{}, err
 	}
 	return cfg, nil
+}
+
+func buildProtectionGuard(cfg runtimeconfig.Config) (protection.Guard, func(), error) {
+	if !cfg.Protection.Enabled {
+		return protection.NoopGuard{}, func() {}, nil
+	}
+
+	client, err := protection.NewRedisClient(cfg.Redis.URL, cfg.Redis.Password)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("redis.url: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		client.Close()
+		return nil, func() {}, fmt.Errorf("redis connection failed: %w", err)
+	}
+
+	guard := protection.NewRedisGuard(client, protection.RedisGuardConfig{
+		KeyPrefix:               cfg.Redis.KeyPrefix,
+		MessageLimit:            cfg.Protection.MessageLimit,
+		MessageWarningRemaining: cfg.Protection.MessageWarningRemaining,
+		ActiveWindow:            cfg.Protection.ActiveWindowDuration,
+		TimeWarningBefore:       cfg.Protection.TimeWarningBeforeDuration,
+	})
+	return guard, func() { _ = client.Close() }, nil
 }

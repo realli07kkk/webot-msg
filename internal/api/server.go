@@ -10,17 +10,35 @@ import (
 
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
+	"github.com/realli07kkk/webot-msg/internal/protection"
+	"github.com/realli07kkk/webot-msg/internal/sender"
 )
 
-type Server struct {
-	store  *config.Store
-	client *ilink.Client
+type messageClient interface {
+	SendMessage(user config.UserConfig, to string, text string, contextToken string) error
+	SendTyping(user config.UserConfig, status int) error
 }
 
-func NewServer(store *config.Store, client *ilink.Client) *Server {
+type Server struct {
+	store        *config.Store
+	client       messageClient
+	guard        protection.Guard
+	reminderText string
+}
+
+func NewServer(store *config.Store, client *ilink.Client, guard protection.Guard, reminderText string) *Server {
+	return NewServerWithClient(store, client, guard, reminderText)
+}
+
+func NewServerWithClient(store *config.Store, client messageClient, guard protection.Guard, reminderText string) *Server {
+	if guard == nil {
+		guard = protection.NoopGuard{}
+	}
 	return &Server{
-		store:  store,
-		client: client,
+		store:        store,
+		client:       client,
+		guard:        guard,
+		reminderText: reminderText,
 	}
 }
 
@@ -87,11 +105,25 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request, user 
 		sendJSON(w, http.StatusBadRequest, map[string]interface{}{"code": 400, "error": "Context not ready"})
 		return
 	}
-	if err := s.client.SendMessage(user, user.IlinkUserID, text, user.ContextToken); err != nil {
+
+	if _, err := sender.SendProtectedText(r.Context(), s.client, s.guard, user, text, s.reminderText); err != nil {
+		if protection.IsRejection(err) {
+			reason := protection.RejectionReason(err)
+			s.sendProtectionLocked(w, protection.RejectionMessage(reason), reason)
+			return
+		}
 		sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"code": 500, "error": err.Error()})
 		return
 	}
 	sendJSON(w, http.StatusOK, map[string]interface{}{"code": 200, "message": "OK"})
+}
+
+func (s *Server) sendProtectionLocked(w http.ResponseWriter, message string, reason string) {
+	data := map[string]interface{}{"code": http.StatusTooManyRequests, "error": message}
+	if reason != "" {
+		data["reason"] = reason
+	}
+	sendJSON(w, http.StatusTooManyRequests, data)
 }
 
 func (s *Server) handleTyping(w http.ResponseWriter, r *http.Request, user config.UserConfig, jsonBody map[string]interface{}) {

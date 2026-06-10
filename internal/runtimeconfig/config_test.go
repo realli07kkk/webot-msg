@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/ilink"
 )
@@ -38,6 +39,18 @@ func TestLoadFileMergesDefaults(t *testing.T) {
 	}
 	if cfg.Log.MaxSize != DefaultLogMaxSize {
 		t.Fatalf("Log.MaxSize = %q, want %q", cfg.Log.MaxSize, DefaultLogMaxSize)
+	}
+	if cfg.Protection.Enabled {
+		t.Fatal("Protection.Enabled = true, want false")
+	}
+	if cfg.Protection.MessageLimit != 10 {
+		t.Fatalf("Protection.MessageLimit = %d, want 10", cfg.Protection.MessageLimit)
+	}
+	if cfg.Redis.URL != "" {
+		t.Fatalf("Redis.URL = %q, want empty default", cfg.Redis.URL)
+	}
+	if cfg.Redis.KeyPrefix != DefaultRedisKeyPrefix {
+		t.Fatalf("Redis.KeyPrefix = %q, want %q", cfg.Redis.KeyPrefix, DefaultRedisKeyPrefix)
 	}
 }
 
@@ -111,6 +124,50 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	}
 	if resolved.Log.MaxSizeBytes != 1024*1024*1024 {
 		t.Fatalf("Log.MaxSizeBytes = %d, want %d", resolved.Log.MaxSizeBytes, int64(1024*1024*1024))
+	}
+	if resolved.Protection.ActiveWindowDuration != 24*time.Hour {
+		t.Fatalf("Protection.ActiveWindowDuration = %s, want 24h", resolved.Protection.ActiveWindowDuration)
+	}
+	if resolved.Protection.TimeWarningBeforeDuration != 30*time.Minute {
+		t.Fatalf("Protection.TimeWarningBeforeDuration = %s, want 30m", resolved.Protection.TimeWarningBeforeDuration)
+	}
+	if resolved.Protection.TimeCheckIntervalDuration != time.Minute {
+		t.Fatalf("Protection.TimeCheckIntervalDuration = %s, want 1m", resolved.Protection.TimeCheckIntervalDuration)
+	}
+}
+
+func TestResolveProtectionRedisConfig(t *testing.T) {
+	cfg := Default()
+	cfg.Protection.Enabled = true
+	cfg.Redis.URL = "redis://localhost:6379/0"
+	cfg.Redis.Password = "secret"
+
+	resolved, err := cfg.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if resolved.Redis.URL != "redis://localhost:6379/0" {
+		t.Fatalf("Redis.URL = %q, want redis://localhost:6379/0", resolved.Redis.URL)
+	}
+	if resolved.Redis.Password != "secret" {
+		t.Fatalf("Redis.Password = %q, want secret", resolved.Redis.Password)
+	}
+}
+
+func TestResolveRedactsRedisURLParseErrors(t *testing.T) {
+	cfg := Default()
+	cfg.Protection.Enabled = true
+	cfg.Redis.URL = "redis://:secret-token@%zz"
+
+	_, err := cfg.Resolve()
+	if err == nil {
+		t.Fatal("Resolve() error = nil, want invalid redis.url")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("Resolve() error = %q, must not contain redis password", err.Error())
+	}
+	if !strings.Contains(err.Error(), "redis.url") {
+		t.Fatalf("Resolve() error = %q, want redis.url context", err.Error())
 	}
 }
 
@@ -305,6 +362,67 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 				cfg.Log.MaxSize = "10XB"
 			},
 			wantErr: "log.max_size",
+		},
+		{
+			name: "protection enabled missing redis url",
+			update: func(cfg *Config) {
+				cfg.Protection.Enabled = true
+			},
+			wantErr: "redis.url",
+		},
+		{
+			name: "invalid redis scheme",
+			update: func(cfg *Config) {
+				cfg.Protection.Enabled = true
+				cfg.Redis.URL = "http://localhost:6379/0"
+			},
+			wantErr: "redis.url",
+		},
+		{
+			name: "redis url password conflict",
+			update: func(cfg *Config) {
+				cfg.Protection.Enabled = true
+				cfg.Redis.URL = "redis://:url-secret@localhost:6379/0"
+				cfg.Redis.Password = "secret"
+			},
+			wantErr: "redis.password",
+		},
+		{
+			name: "invalid message limit",
+			update: func(cfg *Config) {
+				cfg.Protection.MessageLimit = 1
+			},
+			wantErr: "protection.message_limit",
+		},
+		{
+			name: "invalid message warning remaining",
+			update: func(cfg *Config) {
+				cfg.Protection.MessageWarningRemaining = 10
+			},
+			wantErr: "protection.message_warning_remaining",
+		},
+		{
+			name: "invalid active window",
+			update: func(cfg *Config) {
+				cfg.Protection.ActiveWindow = "bad"
+			},
+			wantErr: "protection.active_window",
+		},
+		{
+			name: "time warning too long",
+			update: func(cfg *Config) {
+				cfg.Protection.TimeWarningBefore = "24h"
+			},
+			wantErr: "protection.time_warning_before",
+		},
+		{
+			name: "enabled empty reminder",
+			update: func(cfg *Config) {
+				cfg.Protection.Enabled = true
+				cfg.Redis.URL = "redis://localhost:6379/0"
+				cfg.Protection.ReminderText = ""
+			},
+			wantErr: "protection.reminder_text",
 		},
 		{
 			name: "home lookup error",

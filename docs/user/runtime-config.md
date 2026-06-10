@@ -3,8 +3,8 @@ doc_type: user-guide
 slug: runtime-config
 component: 2026-06-10-runtime-toml-config
 status: current
-summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址和日志文件策略
-tags: [config, cli, control-console, logging]
+summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略和发送保护模式
+tags: [config, cli, control-console, logging, protection, redis]
 last_reviewed: 2026-06-10
 ---
 
@@ -12,7 +12,7 @@ last_reviewed: 2026-06-10
 
 ## 功能简介
 
-`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径和日志大小上限。
+`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限和可选的发送保护模式。
 
 如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。`-c` 仍可用于旧脚本或临时调试，但部署脚本和推荐用法都使用默认路径，避免 service 和 console 读取不同配置。
 
@@ -48,6 +48,20 @@ base_url = "https://ilinkai.weixin.qq.com"
 [log]
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
+
+[protection]
+enabled = false
+message_limit = 10
+message_warning_remaining = 1
+active_window = "24h"
+time_warning_before = "30m"
+time_check_interval = "1m"
+reminder_text = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
+
+[redis]
+url = "redis://localhost:6379/0"
+password = ""
+key_prefix = "webot-msg"
 ```
 
 3. 启动服务：
@@ -95,6 +109,28 @@ webot-msg
 | `ilink.base_url` | `https://ilinkai.weixin.qq.com` | 只接受 `http://` 或 `https://` 地址，必须包含 host |
 | `log.file_path` | `~/.webot-msg/logs/webot-msg.log` | 改成标准日志输出文件路径；设为空字符串可以关闭文件日志 |
 | `log.max_size` | `100MB` | 支持 `B`、`KB`、`MB`、`GB`、`TB`，大小写不敏感，例如 `"10MB"`、`"1GB"` |
+| `protection.enabled` | `false` | 是否启用发送保护模式；关闭时不会连接 Redis |
+| `protection.message_limit` | `10` | 主动对话后允许的微信下发消息限制 |
+| `protection.message_warning_remaining` | `1` | 剩余多少条下发额度时发送提醒并冻结普通发送 |
+| `protection.active_window` | `24h` | 主动对话有效窗口 |
+| `protection.time_warning_before` | `30m` | 距离主动对话窗口结束多久时发送提醒并冻结普通发送 |
+| `protection.time_check_interval` | `1m` | 后台检查主动对话窗口的间隔 |
+| `protection.reminder_text` | 内置中文提醒 | 保护模式提醒文本 |
+| `redis.url` | `""`（部署脚本示例写 `redis://localhost:6379/0`） | Redis 地址和 DB；保护模式开启时不能为空，推荐不在 URL 中写密码 |
+| `redis.password` | `""` | Redis 认证密码；如果 `redis.url` 已自带 password，本字段也非空会启动失败 |
+| `redis.key_prefix` | `webot-msg` | Redis key 前缀；不同环境共用同一个 Redis 时建议改成不同值 |
+
+## 发送保护模式
+
+发送保护模式默认关闭。开启后，程序使用 Redis 按 bot 记录最近一次微信 app 主动对话后的下发次数和 24h 窗口。
+
+- 下发次数快达到 `protection.message_limit` 时，程序会用最后的下发额度发送 `protection.reminder_text`，随后冻结普通文本发送。
+- 24h 主动对话窗口快结束时，程序也会发送提醒并冻结普通文本发送。
+- 冻结后，你需要从微信 app 给机器人主动发一条消息；监听到这条消息后，程序会清零计数、重置 24h 窗口并解除冻结。
+- 保护状态按 bot 分开存储，规则配置全局共用；一个 bot 冻结不会影响另一个 bot。
+- Redis 不可用、认证失败或保护状态读写失败时，保护模式会 fail closed，拒绝普通文本发送，避免静默越过限制。
+
+`redis.password` 不会写入日志。建议把带密码的真实配置文件留在部署机器本地，不提交到 Git。
 
 ## 默认路径与旧文件迁移
 
@@ -125,7 +161,7 @@ webot-msg
 - auth store 保存 bot token、API token 和消息上下文，不要提交到 Git。
 - 默认 auth store 目录和文件会按 owner-only 权限创建。
 - 自定义 `storage.auth_path` 时，建议仍放在当前用户私有目录下。
-- Runtime config 可以提交模板，但不要把真实凭据写进去。
+- Runtime config 可以提交模板，但不要把真实凭据写进去，尤其不要提交真实 `redis.password`。
 
 ## 常见问题
 
