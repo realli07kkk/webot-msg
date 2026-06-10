@@ -4,7 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 SOURCE_SKILLS_DIR="${REPO_ROOT}/skill"
-AGENT_SKILLS_DIR="${HOME}/.agent/skills"
+AGENT_SKILLS_DIR="${HOME}/.agents/skills"
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
 
 usage() {
@@ -20,7 +20,7 @@ To:
 Then create symlinks in:
   ${CLAUDE_SKILLS_DIR}
 
-Existing ~/.agent/skills/<skill-name> directories with the same project skill
+Existing ~/.agents/skills/<skill-name> directories with the same project skill
 name are replaced. Existing ~/.claude/skills/<skill-name> non-symlink paths are
 not overwritten.
 EOF
