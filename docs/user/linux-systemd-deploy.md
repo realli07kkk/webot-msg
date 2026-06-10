@@ -38,7 +38,7 @@ last_reviewed: 2026-06-10
 - 写入 `/etc/systemd/system/webot-msg.service`
 - 执行 `systemctl daemon-reload`
 
-默认配置文件已存在时，脚本会保留原文件，不会覆盖端口、日志路径、iLink 地址等用户改动。脚本也不会删除或修改 `~/.webot-msg/config/auth.json`。
+默认配置文件已存在时，脚本会保留原文件，不会覆盖端口、日志路径、iLink 地址等用户改动。升级时如果旧配置缺少 `[redis]` section，脚本会非破坏性追加默认 Redis 配置，方便随后执行 `/protection enable`。脚本不会删除或修改 `~/.webot-msg/config/auth.json`。
 
 安装完成后，`webot-msg` 位于常见系统 `PATH` 内，可以直接确认：
 
@@ -97,7 +97,7 @@ webot-msg console
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
-升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会自动开启发送保护。升级到支持控制台保护开关的版本后，如果要启用保护模式，需要先在配置文件中保留或补齐 `[redis]`，然后进入 `webot-msg console` 执行 `/protection enable`。
+升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段，也不会自动开启发送保护。升级到支持控制台保护开关的版本后，如果旧配置缺少 `[redis]` section，脚本会追加默认 Redis 配置；确认 Redis 地址和密码后，进入 `webot-msg console` 执行 `/protection enable`。
 
 ## 默认配置
 

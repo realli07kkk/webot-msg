@@ -213,12 +213,9 @@ base_url = "https://ilinkai.weixin.qq.com"
 [log]
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
-
-[redis]
-url = "redis://localhost:6379/0"
-password = "redis123456"
-key_prefix = "webot-msg"
 EOF
+
+	write_default_redis_config >>"${tmp_config}"
 
 	chmod 0600 "${tmp_config}" || {
 		rm -f "${tmp_config}"
@@ -232,6 +229,50 @@ EOF
 		rm -f "${tmp_config}"
 		fail "cannot write ${CONFIG_PATH}"
 	}
+}
+
+write_default_redis_config() {
+	cat <<'EOF'
+[redis]
+url = "redis://localhost:6379/0"
+password = "redis123456"
+key_prefix = "webot-msg"
+EOF
+}
+
+ensure_redis_config_section() {
+	if grep -Eq '^[[:space:]]*\[redis\][[:space:]]*$' "${CONFIG_PATH}"; then
+		return
+	fi
+
+	info "config has no [redis] section; appending default Redis config: ${CONFIG_PATH}"
+	local tmp_config
+	tmp_config="$(mktemp "${CONFIG_DIR}/.${SERVICE_NAME}.toml.tmp.XXXXXX")" || fail "cannot create temporary config"
+
+	cp "${CONFIG_PATH}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot copy ${CONFIG_PATH}"
+	}
+	{
+		printf '\n'
+		write_default_redis_config
+	} >>"${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot append Redis config"
+	}
+	chmod 0600 "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chmod temporary config"
+	}
+	chown_if_root "${DEPLOY_USER}:${DEPLOY_GROUP}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chown temporary config"
+	}
+	mv -f "${tmp_config}" "${CONFIG_PATH}" || {
+		rm -f "${tmp_config}"
+		fail "cannot write ${CONFIG_PATH}"
+	}
+	info "default [redis] section appended: ${CONFIG_PATH}"
 }
 
 write_service_unit() {
@@ -328,9 +369,7 @@ cmd_upgrade() {
 		if grep -Eq '^[[:space:]]*\[protection\][[:space:]]*$' "${CONFIG_PATH}"; then
 			info "legacy [protection] section is ignored; run webot-msg console and /protection enable to enable protection"
 		fi
-		if ! grep -Eq '^[[:space:]]*\[redis\][[:space:]]*$' "${CONFIG_PATH}"; then
-			info "config has no [redis] section; add Redis config before running /protection enable"
-		fi
+		ensure_redis_config_section
 	else
 		info "config not found; upgrade does not create ${CONFIG_PATH}"
 	fi
