@@ -1,18 +1,18 @@
 ---
 name: hacker-news-brief
-description: Generate Simplified Chinese Hacker News morning briefs from the current HN front page. Use when an agent needs to fetch news.ycombinator.com in a CLI-only Linux environment, collect the first 30 stories in page order, use Exa MCP first to read accessible original links, synthesize 3-5 overall trends, and produce a polished Chinese briefing with source-access caveats.
+description: Generate Simplified Chinese Hacker News morning briefs from the current HN front page. Use when an agent needs to fetch news.ycombinator.com in a CLI-only Linux environment, collect the first 30 stories in page order, read accessible original links with the agent's available built-in tools, synthesize 3-5 overall trends, and produce a polished Chinese briefing with source-access caveats.
 ---
 
 # Hacker News Brief
 
 Generate a Simplified Chinese morning brief from the current Hacker News front page. The output should feel like an editorial briefing, not a raw feed dump.
 
-This skill is designed for CLI-only Linux hosts. Use Exa MCP when available, HTTP fetches, command-line tools, and the bundled Python script; do not require a browser, Chrome extension, or desktop UI.
+This skill is designed for CLI-only Linux hosts. Use the current agent's available built-in web/HTTP reading tools, command-line tools, and the bundled Python script; do not require a browser, Chrome extension, or desktop UI.
 
 ## Linux CLI Requirements
 
 - Required: `python3` with the standard library.
-- Preferred when available: Exa MCP, especially `web_fetch_exa`.
+- Prefer the current agent's built-in web/HTTP reading tools for original source content when they are available and reliable.
 - Useful fallback tools: `curl` or `wget` for manual source checks.
 - Network access to `https://news.ycombinator.com/` and original story URLs is required.
 - Do not use GUI browser automation, screenshots, clipboard tools, or macOS-only commands.
@@ -20,16 +20,16 @@ This skill is designed for CLI-only Linux hosts. Use Exa MCP when available, HTT
 ## Workflow
 
 1. Fetch `https://news.ycombinator.com/` and collect the first 30 stories in page order.
-   - If Exa MCP is available, try `web_fetch_exa` for the HN front page first.
-   - Accept the Exa result only if it preserves enough structure to recover exactly the first 30 stories in HN page order with English titles and original URLs.
-   - If Exa output is ambiguous, incomplete, reordered, or missing original URLs, immediately fall back to running `scripts/fetch_hn_frontpage.py --limit 30` from this skill folder.
+   - Use whichever built-in web/HTTP reading tool is most reliable in the current agent runtime.
+   - Accept a tool result only if it preserves enough structure to recover exactly the first 30 stories in HN page order with English titles and original URLs.
+   - If the tool output is ambiguous, incomplete, reordered, or missing original URLs, immediately fall back to running `scripts/fetch_hn_frontpage.py --limit 30` from this skill folder.
    - Preserve HN page order exactly. Do not reorder by score, comments, domain, or perceived importance.
    - Preserve each story's English title exactly as shown on HN.
 
 2. Fetch/read the original link for each story when technically possible.
-   - Use Exa MCP `web_fetch_exa` first for original links. Batch multiple URLs when practical.
-   - Treat an Exa result as usable only when it returns enough readable content to support a factual 1-2 sentence summary.
-   - If Exa fails, returns empty/irrelevant content, times out, or cannot access the source, fall back to CLI `curl`/`wget`, then to HN item page context, then to HN title and visible metadata.
+   - Use the current agent's best available built-in web/HTTP reading tool first for original links. Batch multiple URLs when the tool supports it.
+   - Treat a tool result as usable only when it returns enough readable content to support a factual 1-2 sentence summary.
+   - If the tool fails, returns empty/irrelevant content, times out, or cannot access the source, fall back to CLI `curl`/`wget`, then to HN item page context, then to HN title and visible metadata.
    - Base summaries on accessible original content, not only the HN title.
    - Use HN title and visible HN metadata only when the original is unavailable, blocked, rate-limited, JS-only, a PDF that cannot be read, a GitHub page that cannot be fetched, or an X/Twitter post that cannot be accessed.
    - If the link is an HN item page, summarize from the HN-visible Launch/Ask/Show context and label the limitation.
@@ -102,13 +102,13 @@ Use precise labels inside the relevant story summary:
 
 Use this order for each original story URL:
 
-1. Exa MCP `web_fetch_exa`.
-2. Exa MCP `web_search_exa` only when direct fetch fails and a searchable article title/domain can identify the same source.
+1. Current agent's built-in web/HTTP reading tool, chosen by the agent based on availability and reliability.
+2. Built-in web search only when direct source reading fails and a searchable article title/domain can identify the same source.
 3. CLI HTTP fetch with `curl` or `wget`.
 4. HN item page content and comments context for `Launch HN`, `Ask HN`, `Show HN`, or unavailable original links.
 5. HN title and visible page metadata only.
 
-Consider Exa failed when the tool is unavailable, raises an error, returns no content, returns unrelated content, strips the substance needed for summarization, or cannot distinguish the requested URL from another page. Always label summaries produced from fallback levels 4-5.
+Consider a tool result failed when the tool is unavailable, raises an error, returns no content, returns unrelated content, strips the substance needed for summarization, or cannot distinguish the requested URL from another page. Always label summaries produced from fallback levels 4-5.
 
 ## Script
 
