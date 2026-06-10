@@ -75,7 +75,13 @@ func (a *App) Run(port int) error {
 		}
 	}()
 
-	console.Run(a)
+	if exitReason := console.Run(a); exitReason == console.ExitReasonCommand {
+		fmt.Println("Exit requested. Saving config and exiting...")
+		if err := a.store.Save(); err != nil {
+			return fmt.Errorf("save config failed: %w", err)
+		}
+		return nil
+	}
 
 	fmt.Println("Console closed or not available. Running in background...")
 	select {}

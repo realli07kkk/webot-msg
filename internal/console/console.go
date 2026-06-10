@@ -8,6 +8,13 @@ import (
 	"strings"
 )
 
+type ExitReason int
+
+const (
+	ExitReasonInputClosed ExitReason = iota
+	ExitReasonCommand
+)
+
 type Controller interface {
 	ActiveBotID() string
 	Login() error
@@ -17,7 +24,7 @@ type Controller interface {
 	SendText(text string) error
 }
 
-func Run(controller Controller) {
+func Run(controller Controller) ExitReason {
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Println("\nConsole commands:")
@@ -25,6 +32,8 @@ func Run(controller Controller) {
 	fmt.Println("  /bots        - List all logged-in bots and select active one.")
 	fmt.Println("  /bot <num>   - Select bot by list index.")
 	fmt.Println("  /del <num>   - Delete bot by list index.")
+	fmt.Println("  /exit        - Save config and exit.")
+	fmt.Println("  /quit        - Save config and exit.")
 	fmt.Println("  [Text]       - Send message using active user to themselves.")
 
 	for {
@@ -36,11 +45,15 @@ func Run(controller Controller) {
 
 		text, err := reader.ReadString('\n')
 		if err != nil {
-			return
+			return ExitReasonInputClosed
 		}
 		text = strings.TrimSpace(text)
 		if text == "" {
 			continue
+		}
+
+		if text == "/exit" || text == "/quit" {
+			return ExitReasonCommand
 		}
 
 		if text == "/login" {
@@ -55,7 +68,7 @@ func Run(controller Controller) {
 			fmt.Print("Enter number to select (or enter to cancel): ")
 			numStr, err := reader.ReadString('\n')
 			if err != nil {
-				return
+				return ExitReasonInputClosed
 			}
 			numStr = strings.TrimSpace(numStr)
 			if numStr != "" {

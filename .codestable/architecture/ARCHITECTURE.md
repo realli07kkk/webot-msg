@@ -41,7 +41,7 @@ implements:
 
 `internal/api` 暴露 `/bots/{botID}/messages` 和 `/bots/{botID}/typing` 两类动作。请求先从 `Authorization: Bearer` 或参数里取 token，再按 bot id 查本地配置并校验 `APIToken`，通过后调用 iLink 客户端。代码锚点：`internal/api/server.go:27`、`internal/api/server.go:36`。
 
-`internal/console` 只依赖 `Controller` 接口，负责 `/login`、`/bots`、`/bot <num>`、`/del <num>` 和普通文本发送。这个接口让控制台不直接依赖 app 的具体结构。代码锚点：`internal/console/console.go:11`、`internal/console/console.go:20`。
+`internal/console` 只依赖 `Controller` 接口，负责 `/login`、`/bots`、`/bot <num>`、`/del <num>`、`/exit`、`/quit` 和普通文本发送。这个接口让控制台不直接依赖 app 的具体结构；控制台会返回退出原因，让 `app` 区分用户主动退出和 stdin 关闭。代码锚点：`internal/console/console.go:18`、`internal/console/console.go:27`。
 
 `internal/ilink` 是外部 HTTP API 适配层，封装 QR 登录、拉取更新、发送消息、发送 typing 状态和 bot 配置读取。所有远端请求都通过 `Client.BaseURL` 组装 endpoint。代码锚点：`internal/ilink/client.go:21`、`internal/ilink/client.go:57`、`internal/ilink/client.go:131`、`internal/ilink/client.go:174`。
 
@@ -89,7 +89,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - 文件日志只接管标准库 `log` 输出，不接管控制台提示、二维码或收到的消息内容；启动摘要不能记录 bot token、API token、context token 或完整消息正文。代码锚点：`cmd/webot-msg/main.go:31`、`cmd/webot-msg/main.go:34`。
 - 发送文本依赖最近消息上下文；如果 active bot 没有 `IlinkUserID` 或 `ContextToken`，控制台和 API 都会拒绝发送。代码锚点：`internal/app/app.go:152`、`internal/api/server.go:86`。
 - HTTP API token 为空或不匹配都会返回 unauthorized，不能绕过本地 `APIToken` 校验。代码锚点：`internal/api/server.go:65`。
-- 服务关闭时只处理 `os.Interrupt` 和 `SIGTERM`，收到信号后保存配置并退出。代码锚点：`internal/app/app.go:168`。
+- 服务关闭支持两条路径：控制台 `/exit` 或 `/quit` 会保存配置并从 `App.Run` 返回；收到 `os.Interrupt` 和 `SIGTERM` 信号时也会保存配置并退出。stdin 关闭不是主动退出，服务会继续后台运行。代码锚点：`internal/app/app.go:78`、`internal/app/app.go:168`。
 - Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
 - `webot-msg.service` 使用部署用户运行，`ExecStart` 中的二进制路径和配置路径必须是绝对路径；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
 - 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 或删除 `~/.webot-msg/config/auth.json`；真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
