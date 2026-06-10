@@ -2,7 +2,10 @@ module github.com/realli07kkk/webot-msg
 
 go 1.26.1
 
-require github.com/mdp/qrterminal/v3 v3.2.1
+require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/mdp/qrterminal/v3 v3.2.1
+)
 
 require (
 	golang.org/x/sys v0.29.0 // indirect

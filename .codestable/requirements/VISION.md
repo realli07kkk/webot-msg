@@ -12,7 +12,7 @@ tags: []
 
 ## Current
 
-- [bot-message-bridge](bot-message-bridge.md) — 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话。`status: current`
+- [bot-message-bridge](bot-message-bridge.md) — 在本地登录微信 bot 后，用控制台或受保护 API 回复最近会话，并可通过 TOML 管理本地运行参数。`status: current`
 
 ## Draft
 

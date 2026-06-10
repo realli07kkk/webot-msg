@@ -13,6 +13,11 @@ import (
 
 const DefaultPath = "./config/auth.json"
 
+const (
+	authDirPerm  os.FileMode = 0700
+	authFilePerm os.FileMode = 0600
+)
+
 type UserConfig struct {
 	BotToken      string `json:"bot_token"`
 	BotID         string `json:"bot_id"`
@@ -56,7 +61,7 @@ func GenerateToken(n int) (string, error) {
 }
 
 func (s *Store) EnsureDir() error {
-	return os.MkdirAll(filepath.Dir(s.path), 0755)
+	return os.MkdirAll(filepath.Dir(s.path), authDirPerm)
 }
 
 func (s *Store) Load() error {
@@ -199,7 +204,10 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0644)
+	if err := os.WriteFile(s.path, data, authFilePerm); err != nil {
+		return err
+	}
+	return os.Chmod(s.path, authFilePerm)
 }
 
 func (s *Store) ensureBotsLocked() {

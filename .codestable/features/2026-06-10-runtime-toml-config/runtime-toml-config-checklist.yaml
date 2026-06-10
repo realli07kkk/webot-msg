@@ -1,0 +1,111 @@
+feature: 2026-06-10-runtime-toml-config
+created: 2026-06-10
+
+steps:
+  - action: "编排骨架：让 CLI 入口形成默认 Runtime config，并按现有路径启动 app"
+    exit_signal: "未传 -c 时 go test ./... 通过，默认端口和 iLink BaseURL 与当前版本一致，默认存储路径落在 ~/.webot-msg/ 下"
+    status: done
+  - action: "TOML 加载与字段合并：接入 -c 文件读取，支持部分字段缺省回落默认值"
+    exit_signal: "配置文件只写一个字段时，其余字段仍使用默认值"
+    status: done
+  - action: "校验与单位解析：补齐端口、路径、BaseURL、日志大小的输入校验"
+    exit_signal: "非法 TOML、非法 api.port、非法路径展开和非法 log.max_size 能返回字段级错误"
+    status: done
+  - action: "存储目录与日志文件策略：准备 ~/.webot-msg/ 子目录，根据 log.file_path 初始化标准日志文件输出和大小控制"
+    exit_signal: "默认 auth/log 父目录会自动创建；日志文件路径非空时产生文件，超过上限后不继续无限追加"
+    status: done
+  - action: "兼容性收尾：保留 -port 覆盖语义并补齐关键验证"
+    exit_signal: "无 -c、有 -c、-c + -port、legacy auth 复制四类场景都有验证证据"
+    status: done
+
+checks:
+  - item: "Runtime config 独立于 Auth store，config.UserConfig 与 auth store JSON schema 不新增启动配置字段"
+    source: 名词契约
+    status: passed
+  - item: "TOML 配置契约包含 api.port、storage.auth_path、ilink.base_url、log.file_path、log.max_size"
+    source: 名词契约
+    status: passed
+  - item: "默认 storage.auth_path 与 log.file_path 统一位于 ~/.webot-msg/ 下，并按 config/、logs/ 子目录划分"
+    source: 名词契约
+    status: passed
+  - item: "以 ~ 开头的路径会展开到当前用户 home 目录，父目录在使用前创建"
+    source: 名词契约
+    status: passed
+  - item: "默认 auth store 父目录和 auth 文件使用 owner-only 权限；自定义 auth path 新建父目录按 owner-only 创建；legacy copy 和 Store.Save 都不会放宽 auth 文件权限"
+    source: 名词契约
+    status: passed
+  - item: "log.max_size 支持 MB、GB 等大小写不敏感单位，并按二进制单位解析"
+    source: 名词契约
+    status: passed
+  - item: "未传 -c 时不要求 TOML 文件存在，并使用 ~/.webot-msg/config/auth.json 与 ~/.webot-msg/logs/webot-msg.log"
+    source: 编排骨架
+    status: passed
+  - item: "传入 -c 时读取并合并 TOML，字段缺省回落默认值"
+    source: 编排骨架
+    status: passed
+  - item: "同时提供 -c 和显式 -port 时，最终端口使用 -port"
+    source: 编排骨架
+    status: passed
+  - item: "使用默认 auth path 时，旧 ./config/auth.json 存在且新 ~/.webot-msg/config/auth.json 不存在会原样复制；新文件已存在时不覆盖"
+    source: 编排骨架
+    status: passed
+  - item: "配置文件缺失、TOML 解析失败、字段类型错误、端口非法、home 无法确定、日志大小非法、默认存储目录无法创建、日志文件无法打开时启动失败并指向字段或路径"
+    source: 流程级约束
+    status: passed
+  - item: "TOML 未知 section/key 会启动失败并指出未知 key"
+    source: 流程级约束
+    status: passed
+  - item: "ilink.base_url 只接受 http 或 https scheme"
+    source: 流程级约束
+    status: passed
+  - item: "日志文件配置不得主动记录 BotToken、APIToken、ContextToken 或完整消息正文"
+    source: 流程级约束
+    status: passed
+  - item: "CLI 新增 -c 作为 Runtime config 文件路径入口"
+    source: 挂载点
+    status: passed
+  - item: "CLI 保留 -port，并作为 Runtime config 的兼容覆盖入口"
+    source: 挂载点
+    status: passed
+  - item: "启动流程在 app 创建前完成日志输出初始化"
+    source: 挂载点
+    status: passed
+  - item: "默认存储根目录 ~/.webot-msg/ 是新增默认路径约束"
+    source: 挂载点
+    status: passed
+  - item: "不新增环境变量配置入口"
+    source: 范围守护
+    status: passed
+  - item: "默认 storage.auth_path 与默认 log.file_path 不再指向项目工作目录下的 ./config/ 或 ./logs/"
+    source: 范围守护
+    status: passed
+  - item: "不改变 HTTP API endpoint、请求参数或 token 校验语义"
+    source: 范围守护
+    status: passed
+  - item: "不实现按时间切割、压缩归档、保留天数或远程日志采集配置"
+    source: 范围守护
+    status: passed
+  - item: "TOML 中 api.port = 18080 且启动 -c 后，API server 监听 18080"
+    source: 验收场景
+    status: passed
+  - item: "TOML 缺省 storage.auth_path 与 log.file_path 时，默认回落到 ~/.webot-msg/config/auth.json 与 ~/.webot-msg/logs/webot-msg.log"
+    source: 验收场景
+    status: passed
+  - item: "TOML 中 storage.auth_path = ~/.webot-msg/config/auth.json 后，路径展开到当前用户 home 目录，父目录不存在时自动创建"
+    source: 验收场景
+    status: passed
+  - item: "TOML 中 storage.auth_path = ./tmp/auth.json 后，auth store 从该显式路径加载和保存"
+    source: 验收场景
+    status: passed
+  - item: "TOML 中 ilink.base_url = https://example.com 后，iLink endpoint 使用该 base URL 拼接"
+    source: 验收场景
+    status: passed
+  - item: "TOML 中未知 section/key、ftp:// 或 file:// ilink.base_url 会启动失败并定位字段"
+    source: 验收场景
+    status: passed
+  - item: "legacy copy 后 auth 文件权限为 owner-only，Store.Save 后 auth 文件仍为 owner-only"
+    source: 验收场景
+    status: passed
+  - item: "TOML 中 log.file_path = ~/.webot-msg/logs/webot-msg.log 且 log.max_size = 10MB 后，标准日志写入文件且大小不无限超过上限"
+    source: 验收场景
+    status: passed
