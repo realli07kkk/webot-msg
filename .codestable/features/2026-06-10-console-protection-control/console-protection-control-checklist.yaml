@@ -1,0 +1,96 @@
+feature: 2026-06-10-console-protection-control
+created: 2026-06-10
+
+steps:
+  - action: "配置契约收缩：让 Runtime config 新模板和文档只暴露 [redis]，同时兼容旧 [protection] section 不导致启动失败"
+    exit_signal: "旧配置带 [protection] enabled=true 仍能启动解析，但保护默认 disabled；新默认配置不含 [protection]"
+    status: done
+  - action: "运行期控制器骨架：新增默认 disabled 的可切换 guard，并让 API 与控制台发送路径都通过它"
+    exit_signal: "保护 disabled 时现有发送测试仍通过；enable 前不会连接 Redis"
+    status: done
+  - action: "控制台命令接入：实现 /protection enable 与 /protection disable，处理 Redis 配置读取、连接、PING、关闭和重复调用"
+    exit_signal: "Redis 可用时 enable 成功并影响 API/控制台发送；Redis 不可用时命令失败且发送仍走 disabled 行为"
+    status: done
+  - action: "检查器生命周期：把保护窗口检查器改为 enable 后为已有 bot 启动、login 后按当前 enabled 状态启动、disable 后取消"
+    exit_signal: "disable 后不会继续发送保护提醒；重复 enable 不会创建重复检查器"
+    status: done
+  - action: "状态查询：新增 Redis 只读状态计算和 /protection status 展示"
+    exit_signal: "active bot 正常、冻结、缺 active window、Redis 不可用、保护关闭五类状态都有明确输出"
+    status: done
+  - action: "文档与验收覆盖：更新 runtime config、Linux deploy 文档和 CodeStable 架构/需求说明"
+    exit_signal: "go test ./... 通过，用户文档不再要求编辑 [protection].enabled"
+    status: done
+
+checks:
+  - item: "新生成的默认 Runtime config、部署脚本默认配置和用户文档不再包含 [protection] section，只保留 [redis] section"
+    source: 验收场景
+    status: passed
+  - item: "旧配置中残留 [protection] enabled=true 或规则字段时，服务仍能启动，但保护默认 disabled 且不会自动连接 Redis"
+    source: 兼容性约束
+    status: passed
+  - item: "Runtime config 只保留 RedisConfig 作为用户配置面；保护规则使用代码默认值，不再作为 TOML 契约"
+    source: 名词契约
+    status: passed
+  - item: "运行期保护控制器实现 protection.Guard，并按 enabled 状态委托给 NoopGuard 或当前 RedisGuard"
+    source: 名词契约
+    status: passed
+  - item: "API server 和控制台发送入口共享同一个可切换 guard，控制台启用保护后 API 不能绕过"
+    source: 编排骨架
+    status: passed
+  - item: "/protection enable 读取启动时解析出的 Redis 配置，创建 Redis client，执行 PING，成功后原子切换为新的 Redis guard generation"
+    source: 编排骨架
+    status: passed
+  - item: "/protection enable 在 Redis URL 缺失、格式非法、认证失败或连接失败时失败，并保持保护 disabled 或保留旧 guard"
+    source: 流程级约束
+    status: passed
+  - item: "/protection disable 切回 NoopGuard，关闭当前 Redis client，并取消后台保护窗口检查器"
+    source: 编排骨架
+    status: passed
+  - item: "保护 enabled 后对已登录 bot 启动窗口检查器；/login 新增 bot 时按当前 enabled 状态启动检查器"
+    source: 编排骨架
+    status: passed
+  - item: "重复 enable 或 disable 具备幂等性，不会为同一个 bot 创建重复检查器"
+    source: 流程级约束
+    status: passed
+  - item: "enabled 状态、guard generation 和 Redis client 替换受锁保护，发送路径不能看到半初始化 guard；同一次保护发送事务的 release/record 不能因 disable 落到 no-op"
+    source: 流程级约束
+    status: passed
+  - item: "RedisGuard 提供只读状态查询，读取 state Hash 与 active key PTTL，并计算剩余下发次数与时间"
+    source: 名词契约
+    status: passed
+  - item: "控制台 /protection status 展示整体开关状态、active bot、冻结状态、冻结原因、剩余次数、主动对话窗口剩余时间和距离时间提醒剩余时间"
+    source: 验收场景
+    status: passed
+  - item: "保护 disabled 时 /protection status 不读 Redis，并能显示整体 disabled 与 Redis 是否配置"
+    source: 验收场景
+    status: passed
+  - item: "active key 缺失时 /protection status 显示尚无主动对话窗口，需要从微信 App 主动发消息初始化"
+    source: 验收场景
+    status: passed
+  - item: "frozen=1 reason=count 时 /protection status 显示 frozen、reason=count，并提示需要微信 App 主动消息解除"
+    source: 验收场景
+    status: passed
+  - item: "Redis 临时不可用时 /protection status 输出状态读取失败，不泄露敏感配置"
+    source: 验收场景
+    status: passed
+  - item: "未知 /protection 子命令输出可用子命令，不把它当普通文本发送"
+    source: 验收场景
+    status: passed
+  - item: "HTTP /bots/{botID}/typing 在保护 enabled 或 disabled 时仍不计入保护状态，也不受冻结影响"
+    source: 验收场景
+    status: passed
+  - item: "不新增 HTTP 管理接口控制保护开关"
+    source: 范围守护
+    status: passed
+  - item: "不把 protection enabled 状态写入 TOML、auth store 或 Redis；服务重启后保护默认关闭"
+    source: 范围守护
+    status: passed
+  - item: "控制台不修改 Redis URL、Redis password 或 key prefix；这些仍来自 Runtime config"
+    source: 范围守护
+    status: passed
+  - item: "控制台 status 不直接拼 Redis key 读写逻辑；Redis 状态读取留在保护模块"
+    source: 范围守护
+    status: passed
+  - item: "日志和 status 输出不包含 Redis password、Redis URL password、BotToken、APIToken、ContextToken 或完整消息正文"
+    source: 范围守护
+    status: passed

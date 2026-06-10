@@ -22,6 +22,9 @@ type Controller interface {
 	PrintBots(activeBotID string, out io.Writer)
 	SelectBot(idx int, out io.Writer) (string, bool)
 	DeleteBot(idx int, out io.Writer) (string, bool)
+	EnableProtection(out io.Writer) error
+	DisableProtection(out io.Writer) error
+	PrintProtectionStatus(activeBotID string, out io.Writer)
 	SendText(botID string, text string) error
 }
 
@@ -38,6 +41,7 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 	fmt.Fprintln(out, "  /bots        - List all logged-in bots and select active one.")
 	fmt.Fprintln(out, "  /bot <num>   - Select bot by list index.")
 	fmt.Fprintln(out, "  /del <num>   - Delete bot by list index.")
+	fmt.Fprintln(out, "  /protection enable|disable|status - Control send protection.")
 	fmt.Fprintln(out, "  /exit        - Exit this console session.")
 	fmt.Fprintln(out, "  /quit        - Exit this console session.")
 	fmt.Fprintln(out, "  [Text]       - Send message using active user to themselves.")
@@ -115,6 +119,11 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 			continue
 		}
 
+		if text == "/protection" || strings.HasPrefix(text, "/protection ") {
+			handleProtectionCommand(text, controller, activeBotID, out)
+			continue
+		}
+
 		if strings.HasPrefix(text, "/") {
 			fmt.Fprintln(out, "Command not recognized, treating as text msg...")
 		}
@@ -124,5 +133,28 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 		} else {
 			fmt.Fprintln(out, "Send success!")
 		}
+	}
+}
+
+func handleProtectionCommand(text string, controller Controller, activeBotID string, out io.Writer) {
+	parts := strings.Fields(text)
+	if len(parts) != 2 {
+		fmt.Fprintln(out, "Usage: /protection enable|disable|status")
+		return
+	}
+
+	switch parts[1] {
+	case "enable":
+		if err := controller.EnableProtection(out); err != nil {
+			fmt.Fprintf(out, "Enable protection failed: %v\n", err)
+		}
+	case "disable":
+		if err := controller.DisableProtection(out); err != nil {
+			fmt.Fprintf(out, "Disable protection failed: %v\n", err)
+		}
+	case "status":
+		controller.PrintProtectionStatus(activeBotID, out)
+	default:
+		fmt.Fprintln(out, "Usage: /protection enable|disable|status")
 	}
 }

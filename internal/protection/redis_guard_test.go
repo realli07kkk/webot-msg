@@ -96,6 +96,85 @@ func TestRedisGuardReserveNormalSendTriggersReminderAndCountsReminder(t *testing
 	}
 }
 
+func TestRedisGuardProtectionStatus(t *testing.T) {
+	guard, redisServer, closeClient := newTestRedisGuard(t)
+	defer closeClient()
+
+	if err := guard.RecordActiveConversation(context.Background(), "bot-1"); err != nil {
+		t.Fatalf("RecordActiveConversation() error = %v", err)
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := guard.ReserveNormalSend(context.Background(), "bot-1"); err != nil {
+			t.Fatalf("ReserveNormalSend(%d) error = %v", i+1, err)
+		}
+	}
+	redisServer.FastForward(16 * time.Hour)
+
+	status, err := guard.ProtectionStatus(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("ProtectionStatus() error = %v", err)
+	}
+	if !status.Enabled {
+		t.Fatal("Status.Enabled = false, want true")
+	}
+	if !status.ActiveWindowReady {
+		t.Fatal("Status.ActiveWindowReady = false, want true")
+	}
+	if status.OutCount != 8 {
+		t.Fatalf("Status.OutCount = %d, want 8", status.OutCount)
+	}
+	if status.MessagesBeforeReminder != 1 {
+		t.Fatalf("Status.MessagesBeforeReminder = %d, want 1", status.MessagesBeforeReminder)
+	}
+	if status.ActiveWindowRemaining != 8*time.Hour {
+		t.Fatalf("Status.ActiveWindowRemaining = %s, want 8h", status.ActiveWindowRemaining)
+	}
+	if status.TimeBeforeWarning != 7*time.Hour+30*time.Minute {
+		t.Fatalf("Status.TimeBeforeWarning = %s, want 7h30m", status.TimeBeforeWarning)
+	}
+}
+
+func TestRedisGuardProtectionStatusMissingActiveWindow(t *testing.T) {
+	guard, _, closeClient := newTestRedisGuard(t)
+	defer closeClient()
+
+	status, err := guard.ProtectionStatus(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("ProtectionStatus() error = %v", err)
+	}
+	if status.ActiveWindowReady {
+		t.Fatal("Status.ActiveWindowReady = true, want false")
+	}
+	if status.MessagesBeforeReminder != 9 {
+		t.Fatalf("Status.MessagesBeforeReminder = %d, want 9", status.MessagesBeforeReminder)
+	}
+}
+
+func TestRedisGuardProtectionStatusFrozen(t *testing.T) {
+	guard, _, closeClient := newTestRedisGuard(t)
+	defer closeClient()
+
+	if err := guard.RecordActiveConversation(context.Background(), "bot-1"); err != nil {
+		t.Fatalf("RecordActiveConversation() error = %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		if _, err := guard.ReserveNormalSend(context.Background(), "bot-1"); err != nil {
+			t.Fatalf("ReserveNormalSend(%d) error = %v", i+1, err)
+		}
+	}
+
+	status, err := guard.ProtectionStatus(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("ProtectionStatus() error = %v", err)
+	}
+	if !status.Frozen || status.Reason != ReasonCount {
+		t.Fatalf("frozen=%v reason=%q, want frozen count", status.Frozen, status.Reason)
+	}
+	if !status.ReminderPending {
+		t.Fatal("ReminderPending = false, want true")
+	}
+}
+
 func TestRedisGuardReserveNormalSendRejectsFrozenAndMissingActive(t *testing.T) {
 	guard, _, closeClient := newTestRedisGuard(t)
 	defer closeClient()

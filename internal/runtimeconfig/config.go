@@ -32,13 +32,14 @@ const (
 var userHomeDir = os.UserHomeDir
 
 type Config struct {
-	API        APIConfig        `toml:"api"`
-	Storage    StorageConfig    `toml:"storage"`
-	Control    ControlConfig    `toml:"control"`
-	Ilink      IlinkConfig      `toml:"ilink"`
-	Log        LogConfig        `toml:"log"`
-	Protection ProtectionConfig `toml:"protection"`
-	Redis      RedisConfig      `toml:"redis"`
+	API              APIConfig              `toml:"api"`
+	Storage          StorageConfig          `toml:"storage"`
+	Control          ControlConfig          `toml:"control"`
+	Ilink            IlinkConfig            `toml:"ilink"`
+	Log              LogConfig              `toml:"log"`
+	Protection       ProtectionConfig       `toml:"-"`
+	LegacyProtection LegacyProtectionConfig `toml:"protection"`
+	Redis            RedisConfig            `toml:"redis"`
 }
 
 type APIConfig struct {
@@ -64,22 +65,43 @@ type LogConfig struct {
 }
 
 type ProtectionConfig struct {
-	Enabled                   bool          `toml:"enabled"`
-	MessageLimit              int           `toml:"message_limit"`
-	MessageWarningRemaining   int           `toml:"message_warning_remaining"`
-	ActiveWindow              string        `toml:"active_window"`
-	TimeWarningBefore         string        `toml:"time_warning_before"`
-	TimeCheckInterval         string        `toml:"time_check_interval"`
-	ReminderText              string        `toml:"reminder_text"`
-	ActiveWindowDuration      time.Duration `toml:"-"`
-	TimeWarningBeforeDuration time.Duration `toml:"-"`
-	TimeCheckIntervalDuration time.Duration `toml:"-"`
+	Enabled                   bool
+	MessageLimit              int
+	MessageWarningRemaining   int
+	ActiveWindow              string
+	TimeWarningBefore         string
+	TimeCheckInterval         string
+	ReminderText              string
+	ActiveWindowDuration      time.Duration
+	TimeWarningBeforeDuration time.Duration
+	TimeCheckIntervalDuration time.Duration
+}
+
+type LegacyProtectionConfig struct {
+	Enabled                 bool   `toml:"enabled"`
+	MessageLimit            int    `toml:"message_limit"`
+	MessageWarningRemaining int    `toml:"message_warning_remaining"`
+	ActiveWindow            string `toml:"active_window"`
+	TimeWarningBefore       string `toml:"time_warning_before"`
+	TimeCheckInterval       string `toml:"time_check_interval"`
+	ReminderText            string `toml:"reminder_text"`
 }
 
 type RedisConfig struct {
 	URL       string `toml:"url"`
 	Password  string `toml:"password"`
 	KeyPrefix string `toml:"key_prefix"`
+}
+
+func (c Config) HasLegacyProtectionSettings() bool {
+	legacy := c.LegacyProtection
+	return legacy.Enabled ||
+		legacy.MessageLimit != 0 ||
+		legacy.MessageWarningRemaining != 0 ||
+		strings.TrimSpace(legacy.ActiveWindow) != "" ||
+		strings.TrimSpace(legacy.TimeWarningBefore) != "" ||
+		strings.TrimSpace(legacy.TimeCheckInterval) != "" ||
+		strings.TrimSpace(legacy.ReminderText) != ""
 }
 
 func Default() Config {
@@ -214,23 +236,12 @@ func resolveProtection(cfg *Config) error {
 	if cfg.Protection.MessageWarningRemaining < 1 || cfg.Protection.MessageWarningRemaining >= cfg.Protection.MessageLimit {
 		return fmt.Errorf("protection.message_warning_remaining: must be between 1 and message_limit-1")
 	}
-	if cfg.Protection.Enabled && strings.TrimSpace(cfg.Protection.ReminderText) == "" {
-		return fmt.Errorf("protection.reminder_text: must not be empty when protection is enabled")
+	if strings.TrimSpace(cfg.Protection.ReminderText) == "" {
+		return fmt.Errorf("protection.reminder_text: must not be empty")
 	}
 	if cfg.Redis.KeyPrefix == "" {
 		cfg.Redis.KeyPrefix = DefaultRedisKeyPrefix
 	}
-	if !cfg.Protection.Enabled {
-		return nil
-	}
-	if strings.TrimSpace(cfg.Redis.URL) == "" {
-		return fmt.Errorf("redis.url: must not be empty when protection is enabled")
-	}
-	redisURL, err := validateRedisURL(cfg.Redis.URL, cfg.Redis.Password)
-	if err != nil {
-		return err
-	}
-	cfg.Redis.URL = redisURL
 	return nil
 }
 

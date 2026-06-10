@@ -156,6 +156,46 @@ func TestCheckProtectionTimeWindowOnceSendsReminder(t *testing.T) {
 	}
 }
 
+func TestProtectionCheckerLifecycle(t *testing.T) {
+	store := config.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir() error = %v", err)
+	}
+	if err := store.AddBot(config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}); err != nil {
+		t.Fatalf("AddBot() error = %v", err)
+	}
+
+	a := &App{
+		store:                     store,
+		client:                    &fakeClient{},
+		guard:                     &fakeGuard{},
+		protectionEnabled:         false,
+		timeCheckInterval:         time.Hour,
+		runningProtectionCheckers: make(map[string]*protectionChecker),
+	}
+
+	a.startProtectionChecker("bot-1")
+	if got := len(a.runningProtectionCheckers); got != 0 {
+		t.Fatalf("runningProtectionCheckers = %d, want 0 when disabled", got)
+	}
+
+	a.protectionEnabled = true
+	a.startProtectionChecker("bot-1")
+	a.startProtectionChecker("bot-1")
+	if got := len(a.runningProtectionCheckers); got != 1 {
+		t.Fatalf("runningProtectionCheckers = %d, want 1", got)
+	}
+
+	a.stopProtectionCheckers()
+	if got := len(a.runningProtectionCheckers); got != 0 {
+		t.Fatalf("runningProtectionCheckers = %d, want 0 after stop", got)
+	}
+}
+
 type fakeClient struct {
 	messages []string
 	sendErr  error

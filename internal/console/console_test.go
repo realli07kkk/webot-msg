@@ -67,6 +67,44 @@ func TestRunSwitchesActiveBotAfterLogin(t *testing.T) {
 	}
 }
 
+func TestRunHandlesProtectionCommands(t *testing.T) {
+	controller := &fakeController{defaultBotID: "bot-1"}
+
+	got := runWithInput(t, "/protection enable\n/protection status\n/protection disable\n/exit\n", controller)
+
+	if got != ExitReasonCommand {
+		t.Fatalf("Run() = %v, want %v", got, ExitReasonCommand)
+	}
+	if controller.enableProtectionCalls != 1 {
+		t.Fatalf("enableProtectionCalls = %d, want 1", controller.enableProtectionCalls)
+	}
+	if controller.disableProtectionCalls != 1 {
+		t.Fatalf("disableProtectionCalls = %d, want 1", controller.disableProtectionCalls)
+	}
+	if got := controller.statusBotIDs; len(got) != 1 || got[0] != "bot-1" {
+		t.Fatalf("statusBotIDs = %#v, want [bot-1]", got)
+	}
+	if controller.sendTextCalled {
+		t.Fatal("SendText was called for protection commands")
+	}
+}
+
+func TestRunTreatsProtectionPrefixWithoutSeparatorAsText(t *testing.T) {
+	controller := &fakeController{defaultBotID: "bot-1"}
+
+	got := runWithInput(t, "/protectionfoo\n/exit\n", controller)
+
+	if got != ExitReasonCommand {
+		t.Fatalf("Run() = %v, want %v", got, ExitReasonCommand)
+	}
+	if controller.enableProtectionCalls != 0 || controller.disableProtectionCalls != 0 || len(controller.statusBotIDs) != 0 {
+		t.Fatal("/protectionfoo was handled as a protection command")
+	}
+	if !controller.sendTextCalled {
+		t.Fatal("SendText was not called for /protectionfoo")
+	}
+}
+
 func runWithInput(t *testing.T, input string, controller Controller) ExitReason {
 	t.Helper()
 
@@ -78,7 +116,11 @@ type fakeController struct {
 	loginBotID     string
 	selectBotIDs   map[int]string
 	sentBotIDs     []string
+	statusBotIDs   []string
 	sendTextCalled bool
+
+	enableProtectionCalls  int
+	disableProtectionCalls int
 }
 
 func (f *fakeController) DefaultBotID() string {
@@ -101,6 +143,20 @@ func (f *fakeController) SelectBot(idx int, _ io.Writer) (string, bool) {
 
 func (f *fakeController) DeleteBot(_ int, _ io.Writer) (string, bool) {
 	return "", false
+}
+
+func (f *fakeController) EnableProtection(_ io.Writer) error {
+	f.enableProtectionCalls++
+	return nil
+}
+
+func (f *fakeController) DisableProtection(_ io.Writer) error {
+	f.disableProtectionCalls++
+	return nil
+}
+
+func (f *fakeController) PrintProtectionStatus(botID string, _ io.Writer) {
+	f.statusBotIDs = append(f.statusBotIDs, botID)
 }
 
 func (f *fakeController) SendText(botID string, _ string) error {

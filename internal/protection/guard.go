@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 const (
@@ -42,6 +43,50 @@ type Guard interface {
 	RecordReminderSend(ctx context.Context, botID string) error
 	RecordActiveConversation(ctx context.Context, botID string) error
 	CheckTimeWindow(ctx context.Context, botID string) (Decision, error)
+}
+
+type Operation interface {
+	Guard
+	Done()
+}
+
+type operationStarter interface {
+	BeginOperation() Operation
+}
+
+func BeginOperation(guard Guard) Operation {
+	if guard == nil {
+		return staticOperation{Guard: NoopGuard{}}
+	}
+	if _, ok := guard.(Operation); ok {
+		return staticOperation{Guard: guard}
+	}
+	if starter, ok := guard.(operationStarter); ok {
+		return starter.BeginOperation()
+	}
+	return staticOperation{Guard: guard}
+}
+
+type staticOperation struct {
+	Guard
+}
+
+func (staticOperation) Done() {}
+
+type Status struct {
+	Enabled                bool
+	RedisConfigured        bool
+	BotID                  string
+	ActiveWindowReady      bool
+	Frozen                 bool
+	Reason                 string
+	OutCount               int
+	MessageLimit           int
+	WarningThreshold       int
+	MessagesBeforeReminder int
+	ActiveWindowRemaining  time.Duration
+	TimeBeforeWarning      time.Duration
+	ReminderPending        bool
 }
 
 type NoopGuard struct{}

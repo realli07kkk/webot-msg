@@ -97,7 +97,7 @@ webot-msg console
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
-升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会自动开启新配置项。升级到支持发送保护的版本后，如果要启用保护模式，需要手动编辑该配置文件，把 `[protection].enabled` 改为 `true`，配置 `[redis]`，然后重启服务。
+升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会自动开启发送保护。升级到支持控制台保护开关的版本后，如果要启用保护模式，需要先在配置文件中保留或补齐 `[redis]`，然后进入 `webot-msg console` 执行 `/protection enable`。
 
 ## 默认配置
 
@@ -119,15 +119,6 @@ base_url = "https://ilinkai.weixin.qq.com"
 [log]
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
-
-[protection]
-enabled = false
-message_limit = 10
-message_warning_remaining = 1
-active_window = "24h"
-time_warning_before = "30m"
-time_check_interval = "1m"
-reminder_text = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
 
 [redis]
 url = "redis://localhost:6379/0"

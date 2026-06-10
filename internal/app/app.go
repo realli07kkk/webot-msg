@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,6 +36,7 @@ type Options struct {
 	BaseURL           string
 	ControlSocketPath string
 	Guard             protection.Guard
+	ProtectionConfig  protection.EnableConfig
 	ProtectionEnabled bool
 	ReminderText      string
 	TimeCheckInterval time.Duration
@@ -45,13 +47,15 @@ type App struct {
 	client            client
 	controlSocketPath string
 	guard             protection.Guard
+	runtimeGuard      *protection.RuntimeGuard
+	protectionConfig  protection.EnableConfig
 	protectionEnabled bool
 	reminderText      string
 	timeCheckInterval time.Duration
 
 	monitorMu                 sync.Mutex
 	runningMonitors           map[string]struct{}
-	runningProtectionCheckers map[string]struct{}
+	runningProtectionCheckers map[string]*protectionChecker
 
 	consoleOutputMu     sync.Mutex
 	consoleOutputs      map[int]io.Writer
@@ -63,6 +67,7 @@ func New(opts Options) *App {
 	if guard == nil {
 		guard = protection.NoopGuard{}
 	}
+	runtimeGuard, _ := guard.(*protection.RuntimeGuard)
 	if opts.TimeCheckInterval <= 0 {
 		opts.TimeCheckInterval = time.Minute
 	}
@@ -71,11 +76,13 @@ func New(opts Options) *App {
 		client:                    ilink.NewClient(opts.BaseURL),
 		controlSocketPath:         opts.ControlSocketPath,
 		guard:                     guard,
+		runtimeGuard:              runtimeGuard,
+		protectionConfig:          opts.ProtectionConfig,
 		protectionEnabled:         opts.ProtectionEnabled,
 		reminderText:              opts.ReminderText,
 		timeCheckInterval:         opts.TimeCheckInterval,
 		runningMonitors:           make(map[string]struct{}),
-		runningProtectionCheckers: make(map[string]struct{}),
+		runningProtectionCheckers: make(map[string]*protectionChecker),
 		consoleOutputs:            make(map[int]io.Writer),
 	}
 }
@@ -183,8 +190,93 @@ func (a *App) DeleteBot(idx int, out io.Writer) (string, bool) {
 		fmt.Fprintln(out, "Invalid bot index.")
 		return "", false
 	}
+	a.stopProtectionChecker(botID)
 	fmt.Fprintf(out, "Bot deleted: %s\n", botID)
 	return botID, true
+}
+
+func (a *App) EnableProtection(out io.Writer) error {
+	if a.runtimeGuard == nil {
+		return errors.New("runtime protection guard is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.runtimeGuard.Enable(ctx, a.protectionConfig); err != nil {
+		return err
+	}
+	a.protectionEnabled = true
+	for _, botID := range a.store.BotIDs() {
+		a.startProtectionChecker(botID)
+	}
+	fmt.Fprintf(out, "Protection enabled. Redis key prefix: %s\n", a.protectionConfig.KeyPrefix)
+	return nil
+}
+
+func (a *App) DisableProtection(out io.Writer) error {
+	if a.runtimeGuard == nil {
+		return errors.New("runtime protection guard is not available")
+	}
+	a.stopProtectionCheckers()
+	a.runtimeGuard.Disable()
+	a.protectionEnabled = false
+	fmt.Fprintln(out, "Protection disabled.")
+	return nil
+}
+
+func (a *App) PrintProtectionStatus(activeBotID string, out io.Writer) {
+	if a.runtimeGuard == nil {
+		fmt.Fprintln(out, "Protection status unavailable: runtime protection guard is not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if a.runtimeGuard.Enabled() && activeBotID == "" {
+		a.printProtectionStatus(protection.Status{
+			Enabled:         true,
+			RedisConfigured: strings.TrimSpace(a.protectionConfig.RedisURL) != "",
+		}, out)
+		return
+	}
+	status, err := a.runtimeGuard.RuntimeStatus(ctx, activeBotID)
+	if err != nil {
+		fmt.Fprintf(out, "Protection status unavailable: %v\n", err)
+		return
+	}
+	status.RedisConfigured = strings.TrimSpace(a.protectionConfig.RedisURL) != ""
+	a.printProtectionStatus(status, out)
+}
+
+func (a *App) printProtectionStatus(status protection.Status, out io.Writer) {
+	if !status.Enabled {
+		fmt.Fprintln(out, "Protection disabled.")
+		fmt.Fprintf(out, "Redis configured: %s\n", yesNo(status.RedisConfigured))
+		return
+	}
+
+	fmt.Fprintln(out, "Protection enabled.")
+	fmt.Fprintf(out, "Redis configured: %s\n", yesNo(status.RedisConfigured))
+	if status.BotID == "" {
+		fmt.Fprintln(out, "No active bot selected. Type '/bots' to select.")
+		return
+	}
+
+	fmt.Fprintf(out, "Bot: %s\n", status.BotID)
+	if status.Frozen {
+		fmt.Fprintf(out, "Frozen: yes (%s)\n", status.Reason)
+	} else {
+		fmt.Fprintln(out, "Frozen: no")
+	}
+	if !status.ActiveWindowReady {
+		fmt.Fprintln(out, "Active window: not ready; send a message from WeChat app before continuing.")
+		return
+	}
+	fmt.Fprintf(out, "Messages before reminder: %d\n", status.MessagesBeforeReminder)
+	fmt.Fprintf(out, "Active window remaining: %s\n", formatStatusDuration(status.ActiveWindowRemaining))
+	fmt.Fprintf(out, "Time before warning: %s\n", formatStatusDuration(status.TimeBeforeWarning))
+	if status.ReminderPending {
+		fmt.Fprintln(out, "Reminder pending: yes")
+	}
 }
 
 func (a *App) SendText(botID string, text string) error {
@@ -207,12 +299,18 @@ func (a *App) SendText(botID string, text string) error {
 	return nil
 }
 
-func (a *App) sendProtectionReminder(ctx context.Context, user config.UserConfig, reason string) error {
-	_, err := sender.SendProtectionReminder(ctx, a.client, a.protectionGuard(), user, a.reminderText, reason)
-	if err != nil {
-		return err
+func yesNo(value bool) string {
+	if value {
+		return "yes"
 	}
-	return nil
+	return "no"
+}
+
+func formatStatusDuration(value time.Duration) string {
+	if value <= 0 {
+		return "0s"
+	}
+	return value.Round(time.Second).String()
 }
 
 func (a *App) AddConsoleOutput(out io.Writer) func() {
@@ -279,28 +377,32 @@ func (a *App) startMonitor(botID string) {
 }
 
 func (a *App) startProtectionChecker(botID string) {
-	if !a.protectionEnabled {
+	if !a.protectionIsEnabled() {
 		return
 	}
 
 	a.monitorMu.Lock()
 	if a.runningProtectionCheckers == nil {
-		a.runningProtectionCheckers = make(map[string]struct{})
+		a.runningProtectionCheckers = make(map[string]*protectionChecker)
 	}
 	if _, exists := a.runningProtectionCheckers[botID]; exists {
 		a.monitorMu.Unlock()
 		return
 	}
-	a.runningProtectionCheckers[botID] = struct{}{}
+	ctx, cancel := context.WithCancel(context.Background())
+	checker := &protectionChecker{cancel: cancel}
+	a.runningProtectionCheckers[botID] = checker
 	a.monitorMu.Unlock()
 
-	go a.monitorProtectionWindow(botID)
+	go a.monitorProtectionWindow(ctx, botID, checker)
 }
 
-func (a *App) monitorProtectionWindow(botID string) {
+func (a *App) monitorProtectionWindow(ctx context.Context, botID string, checker *protectionChecker) {
 	defer func() {
 		a.monitorMu.Lock()
-		delete(a.runningProtectionCheckers, botID)
+		if a.runningProtectionCheckers[botID] == checker {
+			delete(a.runningProtectionCheckers, botID)
+		}
 		a.monitorMu.Unlock()
 	}()
 
@@ -311,8 +413,51 @@ func (a *App) monitorProtectionWindow(botID string) {
 		if !a.checkProtectionTimeWindowOnce(botID) {
 			return
 		}
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
 	}
+}
+
+func (a *App) stopProtectionChecker(botID string) {
+	a.monitorMu.Lock()
+	checker := a.runningProtectionCheckers[botID]
+	delete(a.runningProtectionCheckers, botID)
+	a.monitorMu.Unlock()
+	if checker != nil && checker.cancel != nil {
+		checker.cancel()
+	}
+}
+
+func (a *App) stopProtectionCheckers() {
+	a.monitorMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(a.runningProtectionCheckers))
+	for botID, checker := range a.runningProtectionCheckers {
+		if checker != nil && checker.cancel != nil {
+			cancels = append(cancels, checker.cancel)
+		}
+		delete(a.runningProtectionCheckers, botID)
+	}
+	a.monitorMu.Unlock()
+
+	for _, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+	}
+}
+
+type protectionChecker struct {
+	cancel context.CancelFunc
+}
+
+func (a *App) protectionIsEnabled() bool {
+	if a.runtimeGuard != nil {
+		return a.runtimeGuard.Enabled()
+	}
+	return a.protectionEnabled
 }
 
 func (a *App) checkProtectionTimeWindowOnce(botID string) bool {
@@ -321,13 +466,17 @@ func (a *App) checkProtectionTimeWindowOnce(botID string) bool {
 		return false
 	}
 
-	decision, err := a.protectionGuard().CheckTimeWindow(context.Background(), botID)
+	ctx := context.Background()
+	operation := protection.BeginOperation(a.protectionGuard())
+	defer operation.Done()
+
+	decision, err := operation.CheckTimeWindow(ctx, botID)
 	if err != nil {
 		log.Printf("[Bot: %s] Protection time window check failed: %v", botID, err)
 		return true
 	}
 	if decision.Kind == protection.DecisionSendReminderAndFreeze {
-		if err := a.sendProtectionReminder(context.Background(), user, decision.Reason); err != nil {
+		if _, err := sender.SendProtectionReminder(ctx, a.client, operation, user, a.reminderText, decision.Reason); err != nil {
 			log.Printf("[Bot: %s] Protection reminder record failed: %v", botID, err)
 		}
 	}

@@ -106,6 +106,12 @@ func (c *broadcastController) SelectBot(int, io.Writer) (string, bool) { return 
 
 func (c *broadcastController) DeleteBot(int, io.Writer) (string, bool) { return "", false }
 
+func (c *broadcastController) EnableProtection(io.Writer) error { return nil }
+
+func (c *broadcastController) DisableProtection(io.Writer) error { return nil }
+
+func (c *broadcastController) PrintProtectionStatus(string, io.Writer) {}
+
 func (c *broadcastController) SendText(string, string) error { return nil }
 
 func (c *broadcastController) AddConsoleOutput(io.Writer) func() {

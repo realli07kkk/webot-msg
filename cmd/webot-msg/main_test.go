@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
@@ -103,6 +104,22 @@ func TestParseCLIAcceptsConfigFlagForCompatibility(t *testing.T) {
 func TestParseCLIRejectsUnknownCommand(t *testing.T) {
 	if _, err := parseCLI([]string{"login"}); err == nil {
 		t.Fatal("parseCLI() error = nil, want error")
+	}
+}
+
+func TestLegacyProtectionWarning(t *testing.T) {
+	if got := legacyProtectionWarning(runtimeconfig.Default()); got != "" {
+		t.Fatalf("legacyProtectionWarning(default) = %q, want empty", got)
+	}
+
+	cfg := runtimeconfig.Default()
+	cfg.LegacyProtection.Enabled = true
+	got := legacyProtectionWarning(cfg)
+	if !strings.Contains(got, "legacy [protection] config is ignored") {
+		t.Fatalf("legacyProtectionWarning() = %q, want migration warning", got)
+	}
+	if !strings.Contains(got, "/protection enable") {
+		t.Fatalf("legacyProtectionWarning() = %q, want /protection enable guidance", got)
 	}
 }
 

@@ -3,6 +3,9 @@ package protection
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,6 +30,10 @@ type RedisGuard struct {
 }
 
 func NewRedisClient(rawURL string, password string) (*redis.Client, error) {
+	rawURL, err := ValidateRedisURL(rawURL, password)
+	if err != nil {
+		return nil, err
+	}
 	opts, err := redis.ParseURL(rawURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse redis url failed")
@@ -35,6 +42,30 @@ func NewRedisClient(rawURL string, password string) (*redis.Client, error) {
 		opts.Password = password
 	}
 	return redis.NewClient(opts), nil
+}
+
+func ValidateRedisURL(value string, password string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("redis.url: must not be empty")
+	}
+
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("redis.url: invalid URL")
+	}
+	if parsed.Scheme != "redis" && parsed.Scheme != "rediss" {
+		return "", fmt.Errorf("redis.url: scheme must be redis or rediss")
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("redis.url: host must not be empty")
+	}
+	if parsed.User != nil {
+		if _, hasPassword := parsed.User.Password(); hasPassword && password != "" {
+			return "", fmt.Errorf("redis.password: must not be set when redis.url already contains a password")
+		}
+	}
+	return strings.TrimRight(value, "/"), nil
 }
 
 func NewRedisGuard(client *redis.Client, cfg RedisGuardConfig) *RedisGuard {
@@ -89,6 +120,62 @@ func (g *RedisGuard) CheckTimeWindow(ctx context.Context, botID string) (Decisio
 		return Decision{}, NewRejection("redis", err)
 	}
 	return decision, nil
+}
+
+func (g *RedisGuard) ProtectionStatus(ctx context.Context, botID string) (Status, error) {
+	keys := g.keys(botID)
+	values, err := g.client.HMGet(ctx, keys[0], "out_count", "frozen", "reason", "reminder_pending").Result()
+	if err != nil {
+		return Status{}, NewRejection("redis", err)
+	}
+	ttl, err := g.client.PTTL(ctx, keys[1]).Result()
+	if err != nil {
+		return Status{}, NewRejection("redis", err)
+	}
+
+	outCount := parseRedisInt(values[0])
+	threshold := g.messageLimit - g.messageWarningRemaining
+	messagesBeforeReminder := threshold - outCount
+	if messagesBeforeReminder < 0 {
+		messagesBeforeReminder = 0
+	}
+
+	activeWindowRemaining := time.Duration(0)
+	timeBeforeWarning := time.Duration(0)
+	activeWindowReady := ttl > 0
+	if activeWindowReady {
+		activeWindowRemaining = ttl
+		timeBeforeWarning = ttl - g.timeWarningBefore
+		if timeBeforeWarning < 0 {
+			timeBeforeWarning = 0
+		}
+	}
+
+	return Status{
+		Enabled:                true,
+		BotID:                  botID,
+		ActiveWindowReady:      activeWindowReady,
+		Frozen:                 fmt.Sprint(values[1]) == "1",
+		Reason:                 fmt.Sprint(values[2]),
+		OutCount:               outCount,
+		MessageLimit:           g.messageLimit,
+		WarningThreshold:       threshold,
+		MessagesBeforeReminder: messagesBeforeReminder,
+		ActiveWindowRemaining:  activeWindowRemaining,
+		TimeBeforeWarning:      timeBeforeWarning,
+		ReminderPending:        fmt.Sprint(values[3]) == "1",
+	}, nil
+}
+
+func parseRedisInt(value interface{}) int {
+	if value == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(fmt.Sprint(value))
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func (g *RedisGuard) keys(botID string) []string {

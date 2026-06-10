@@ -20,10 +20,13 @@ type TextResult struct {
 }
 
 func SendProtectedText(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string) (TextResult, error) {
-	if guard == nil {
-		guard = protection.NoopGuard{}
-	}
+	operation := protection.BeginOperation(guard)
+	defer operation.Done()
 
+	return sendProtectedText(ctx, client, operation, user, text, reminderText)
+}
+
+func sendProtectedText(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string) (TextResult, error) {
 	result := TextResult{}
 	reservation, err := guard.ReserveNormalSend(ctx, user.BotID)
 	if err != nil {
@@ -34,7 +37,7 @@ func SendProtectedText(ctx context.Context, client MessageClient, guard protecti
 	case protection.ReservationReject:
 		return result, protection.NewRejection(reservation.Reason, nil)
 	case protection.ReservationSendReminderOnly:
-		reminderSent, err := SendProtectionReminder(ctx, client, guard, user, reminderText, reservation.Reason)
+		reminderSent, err := sendProtectionReminder(ctx, client, guard, user, reminderText, reservation.Reason)
 		result.ReminderSent = reminderSent
 		result.ReminderReason = reservation.Reason
 		if err != nil {
@@ -50,7 +53,7 @@ func SendProtectedText(ctx context.Context, client MessageClient, guard protecti
 		}
 		result.NormalSent = true
 		if reservation.Kind == protection.ReservationSendNormalThenReminder {
-			reminderSent, err := SendProtectionReminder(ctx, client, guard, user, reminderText, reservation.Reason)
+			reminderSent, err := sendProtectionReminder(ctx, client, guard, user, reminderText, reservation.Reason)
 			result.ReminderSent = reminderSent
 			result.ReminderReason = reservation.Reason
 			if err != nil {
@@ -64,9 +67,13 @@ func SendProtectedText(ctx context.Context, client MessageClient, guard protecti
 }
 
 func SendProtectionReminder(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, reminderText string, reason string) (bool, error) {
-	if guard == nil {
-		guard = protection.NoopGuard{}
-	}
+	operation := protection.BeginOperation(guard)
+	defer operation.Done()
+
+	return sendProtectionReminder(ctx, client, operation, user, reminderText, reason)
+}
+
+func sendProtectionReminder(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, reminderText string, reason string) (bool, error) {
 	if reminderText == "" || user.IlinkUserID == "" || user.ContextToken == "" {
 		return false, nil
 	}

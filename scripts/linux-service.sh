@@ -214,18 +214,9 @@ base_url = "https://ilinkai.weixin.qq.com"
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
 
-[protection]
-enabled = false
-message_limit = 10
-message_warning_remaining = 1
-active_window = "24h"
-time_warning_before = "30m"
-time_check_interval = "1m"
-reminder_text = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
-
 [redis]
 url = "redis://localhost:6379/0"
-password = ""
+password = "redis123456"
 key_prefix = "webot-msg"
 EOF
 
@@ -334,8 +325,11 @@ cmd_upgrade() {
 	daemon_reload
 	if [[ -e "${CONFIG_PATH}" ]]; then
 		info "config exists, keeping: ${CONFIG_PATH}"
-		if ! grep -Eq '^[[:space:]]*\[protection\][[:space:]]*$' "${CONFIG_PATH}"; then
-			info "config has no [protection] section; add it manually and restart to enable send protection"
+		if grep -Eq '^[[:space:]]*\[protection\][[:space:]]*$' "${CONFIG_PATH}"; then
+			info "legacy [protection] section is ignored; run webot-msg console and /protection enable to enable protection"
+		fi
+		if ! grep -Eq '^[[:space:]]*\[redis\][[:space:]]*$' "${CONFIG_PATH}"; then
+			info "config has no [redis] section; add Redis config before running /protection enable"
 		fi
 	else
 		info "config not found; upgrade does not create ${CONFIG_PATH}"
