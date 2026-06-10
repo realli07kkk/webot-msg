@@ -97,6 +97,8 @@ webot-msg console
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
+升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml`，也不会自动开启新配置项。升级到支持发送保护的版本后，如果要启用保护模式，需要手动编辑该配置文件，把 `[protection].enabled` 改为 `true`，配置 `[redis]`，然后重启服务。
+
 ## 默认配置
 
 首次安装写入的配置内容如下：
