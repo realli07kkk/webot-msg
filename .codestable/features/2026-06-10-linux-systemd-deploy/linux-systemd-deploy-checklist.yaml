@@ -1,0 +1,84 @@
+feature: 2026-06-10-linux-systemd-deploy
+created: 2026-06-10
+
+steps:
+  - action: "编排骨架：新增 Linux deploy script 入口和子命令分发，先实现 help、依赖检查和部署路径解析"
+    exit_signal: "在非 Linux/systemd 或缺少依赖时能明确失败；在 Linux 上能打印将使用的 repo root、deploy home、binary path 和 config path"
+    status: done
+  - action: "构建与替换节点：实现 go build 到临时二进制，再替换 bin/webot-msg"
+    exit_signal: "install/upgrade 都能生成可执行的 bin/webot-msg；编译失败时旧二进制不被破坏"
+    status: done
+  - action: "安装节点：创建 ~/.webot-msg/config/ 与 ~/.webot-msg/logs/，写入默认 TOML，生成并 reload systemd service"
+    exit_signal: "重复 install 不覆盖已有 TOML；service 文件 ExecStart 使用绝对二进制路径和绝对配置路径"
+    status: done
+  - action: "升级节点：接入 systemctl is-active、按需 stop、替换二进制、按需 start"
+    exit_signal: "服务 active 时升级后恢复 active；服务 inactive 时升级后不自动 start"
+    status: done
+  - action: "服务控制与文档收尾：补齐 start/stop/restart/status 透传和用户文档"
+    exit_signal: "用户可以用脚本或 systemctl 执行四类 service 操作，文档说明安装不覆盖已有配置和 auth store"
+    status: done
+
+checks:
+  - item: "Linux deploy script 提供 install、upgrade、start、stop、restart、status 子命令"
+    source: 挂载点
+    status: passed
+  - item: "install 使用当前源码编译出仓库 bin/webot-msg，service 的 ExecStart 直接引用该绝对路径"
+    source: 名词契约
+    status: passed
+  - item: "install 创建部署用户 home 下的 ~/.webot-msg/config/ 与 ~/.webot-msg/logs/"
+    source: 验收场景
+    status: passed
+  - item: "install 首次写入 ~/.webot-msg/config/webot-msg.toml，内容包含默认端口、auth path、iLink BaseURL、log path 和 max_size"
+    source: 名词契约
+    status: passed
+  - item: "install 重复执行时不覆盖已有 webot-msg.toml，不删除或修改 auth.json"
+    source: 范围守护
+    status: passed
+  - item: "systemd service 名为 webot-msg.service，并写入 /etc/systemd/system/webot-msg.service"
+    source: 挂载点
+    status: passed
+  - item: "systemd service 的 ExecStart 使用 -c 指向默认配置文件的绝对路径，不依赖 ~ 展开"
+    source: 编排骨架
+    status: passed
+  - item: "systemd service 默认用部署用户运行，不默认以 root 身份运行，除非部署用户本身是 root"
+    source: 流程级约束
+    status: passed
+  - item: "安装写入或更新 service 后执行 systemctl daemon-reload"
+    source: 编排骨架
+    status: passed
+  - item: "systemctl start/stop/restart/status webot-msg 可以识别并操作该 service"
+    source: 验收场景
+    status: passed
+  - item: "脚本 start/stop/restart/status 子命令透传到同名 systemctl 操作"
+    source: 验收场景
+    status: passed
+  - item: "upgrade 在替换前先用 systemctl is-active 判断 webot-msg 是否 active，并记录 was_active"
+    source: 编排骨架
+    status: passed
+  - item: "upgrade 在服务 active 时先 stop，编译替换成功后再 start，最终恢复 active"
+    source: 验收场景
+    status: passed
+  - item: "upgrade 在服务 inactive/failed/unknown 时只编译替换，不自动 start"
+    source: 验收场景
+    status: passed
+  - item: "install/upgrade 编译到临时二进制，编译成功后才替换 bin/webot-msg"
+    source: 流程级约束
+    status: passed
+  - item: "go build 失败时脚本非零退出，旧的 bin/webot-msg 不被破坏"
+    source: 验收场景
+    status: passed
+  - item: "缺少 go、systemctl、sudo 权限、无法解析部署用户 home、写 service 失败、daemon-reload 失败、stop/start 失败时脚本非零退出并指出阶段"
+    source: 流程级约束
+    status: passed
+  - item: "部署脚本输出、service 文件和默认 TOML 不包含 BotToken、APIToken、ContextToken 或消息内容"
+    source: 范围守护
+    status: passed
+  - item: "Go 程序不新增部署专用 CLI 参数，不改变 -c、-port、Runtime config schema、HTTP API 或登录/监听流程"
+    source: 范围守护
+    status: passed
+  - item: "本 feature 不新增 Dockerfile、包管理器元数据、多实例管理、备份、回滚或远程部署逻辑"
+    source: 范围守护
+    status: passed
+  - item: "用户文档说明 Linux 安装、升级、service 控制入口，以及 install 不覆盖已有 TOML/auth store"
+    source: 挂载点
+    status: passed

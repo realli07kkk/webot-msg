@@ -14,6 +14,8 @@
 
 ### 命令与脚本陷阱
 
+- 后续改启动参数、默认路径、构建方式或 Linux 运行方式时，要同步检查是否需要更新 `scripts/linux-service.sh` 和 `docs/user/linux-systemd-deploy.md`。
+
 ### 路径与目录约定
 
 ### 环境变量与凭证

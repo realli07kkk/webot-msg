@@ -142,5 +142,6 @@ A: 启动时传 `-port`：
 
 ## 相关功能
 
+- [Linux systemd 部署说明](./linux-systemd-deploy.md)
 - [本地登录微信 bot 并回复最近会话](../../.codestable/requirements/bot-message-bridge.md)
 - [架构总入口](../../.codestable/architecture/ARCHITECTURE.md)

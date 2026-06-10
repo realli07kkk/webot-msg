@@ -2,10 +2,10 @@
 doc_type: architecture
 slug: architecture-overview
 scope: webot-msg 当前 CLI/API 服务整体结构
-summary: CLI 启动一个本地应用，由 app 编排配置、iLink 客户端、HTTP API、控制台和每个 bot 的消息监听。
+summary: CLI 启动一个本地应用，由 app 编排配置、iLink 客户端、HTTP API、控制台、每个 bot 的消息监听和 Linux systemd 部署脚本。
 status: current
 last_reviewed: 2026-06-10
-tags: [go, cli, api, bot, config, logging]
+tags: [go, cli, api, bot, config, logging, deploy, systemd]
 depends_on: []
 implements:
   - bot-message-bridge
@@ -20,6 +20,8 @@ implements:
 - 消息上下文：发送回复需要的 `IlinkUserID` 与 `ContextToken`，由监听更新时写回本地配置。代码锚点：`internal/app/app.go:226`。
 - Runtime config：启动时读取的 TOML 配置，控制 API 端口、auth store 路径、iLink BaseURL 和日志文件策略，不保存 bot 凭据或消息上下文。代码锚点：`internal/runtimeconfig/config.go:26`。
 - Log file policy：标准日志的文件输出路径和大小上限，默认写入 `~/.webot-msg/logs/webot-msg.log`，达到上限后只保留一个 `.1` 备份。代码锚点：`internal/logfile/writer.go:9`。
+- Linux deploy script：仓库内的 Linux/systemd 编译部署入口，负责编译 `bin/webot-msg`、首次写入默认 Runtime config、安装 `webot-msg.service`、升级时按原运行状态 stop/start。代码锚点：`scripts/linux-service.sh:1`。
+- Service unit：Linux deploy script 生成的 systemd unit，固定名为 `webot-msg.service`，用 `ExecStart={repo}/bin/webot-msg -c {home}/.webot-msg/config/webot-msg.toml` 启动服务。代码锚点：`scripts/linux-service.sh:206`。
 
 ## 1. 定位与受众
 
@@ -30,6 +32,8 @@ implements:
 `cmd/webot-msg/main.go` 是唯一可执行入口，解析 `-c` 和 `-port`，加载并校验 Runtime config，准备本地存储目录和文件日志，然后用解析后的 auth store path 与 iLink BaseURL 创建应用。`-port` 是兼容覆盖入口：同时存在 TOML `api.port` 和显式 `-port` 时以命令行值为准。代码锚点：`cmd/webot-msg/main.go:13`、`cmd/webot-msg/main.go:42`。
 
 `internal/runtimeconfig` 是启动配置计算层。它先给出内置默认值，再按可选 TOML 覆盖，最后做 `~` 展开、端口范围、BaseURL scheme、日志大小和未知 key 校验。默认存储根目录是 `~/.webot-msg/`，默认 auth store 与日志路径分别落在 `config/` 和 `logs/` 子目录。代码锚点：`internal/runtimeconfig/config.go:16`、`internal/runtimeconfig/config.go:51`、`internal/runtimeconfig/config.go:69`、`internal/runtimeconfig/config.go:90`。
+
+`scripts/linux-service.sh` 是 Linux/systemd 部署编排入口。`install` 会检查 Linux/systemd、Go、部署用户 home 和 sudo 权限，编译当前源码到 `bin/webot-msg`，创建部署用户的 `~/.webot-msg/config/` 与 `~/.webot-msg/logs/`，首次写入默认 `webot-msg.toml`，再生成 `/etc/systemd/system/webot-msg.service` 并执行 `systemctl daemon-reload`。`upgrade` 会先用 `systemctl is-active --quiet webot-msg` 记录服务是否 active；active 时先 stop，替换二进制后再 start；非 active 时只替换二进制，不主动启动。`start`、`stop`、`restart`、`status` 子命令透传到 `systemctl`。代码锚点：`scripts/linux-service.sh:261`、`scripts/linux-service.sh:272`、`scripts/linux-service.sh:298`。
 
 `internal/logfile` 是标准日志文件输出的轻量大小控制层。传入空日志路径时禁用文件日志；传入路径时以追加方式打开文件，并在下一次写入会超过上限时把当前文件轮转为 `.1`。代码锚点：`internal/logfile/writer.go:17`、`internal/logfile/writer.go:47`、`internal/logfile/writer.go:74`。
 
@@ -51,12 +55,16 @@ implements:
 
 兼容迁移只在使用默认 auth store path 时发生：如果旧 `./config/auth.json` 存在且新 `~/.webot-msg/config/auth.json` 不存在，启动前原样复制一次；如果新文件已存在，旧文件不会覆盖新文件。复制目标文件按 owner-only 权限创建。代码锚点：`internal/runtimeconfig/config.go:151`、`internal/runtimeconfig/config.go:208`。
 
+Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.webot-msg/config/webot-msg.toml`，内容与 Runtime config 默认契约一致；已有 TOML 时不会覆盖，`~/.webot-msg/config/auth.json` 仍由 `config.Store` 管理，不由部署脚本迁移、覆盖或删除。代码锚点：`scripts/linux-service.sh:167`。
+
 ## 4. 关键决策
 
 - Runtime config 与 auth store 分离：启动参数使用 TOML，运行态凭据、游标和上下文继续放在 auth store JSON 中，避免把可提交的启动配置和本地凭据混在一起。
 - 默认本地存储统一收敛到 `~/.webot-msg/`：默认 auth store 使用 `~/.webot-msg/config/auth.json`，默认标准日志使用 `~/.webot-msg/logs/webot-msg.log`；显式 TOML 路径可以指向其他位置。
 - 配置入口保持克制：本项目只有 `-c` TOML 和兼容 `-port` 两类启动配置入口，不新增环境变量配置入口。
 - auth store 权限按凭据处理：新建 auth 目录使用 owner-only，auth 文件保存和 legacy copy 后都保持 owner-only；日志文件不使用 auth store 权限策略。
+- Linux 部署入口保持仓库脚本形态：本项目提供 Bash 脚本管理单个 `webot-msg.service`，不引入 `.deb`、RPM、Docker、Ansible 或多实例管理。
+- 升级保持原运行意图：`upgrade` 只在服务升级前处于 active 时 stop 后再 start；服务原本非 active 时只替换二进制，不主动启动。
 
 ## 5. 代码锚点
 
@@ -69,6 +77,8 @@ implements:
 - `internal/config/store.go:Store` — 本地配置持久化和并发保护。
 - `internal/console/console.go:Run` — 交互式控制台命令循环。
 - `internal/ilink/client.go:Client` — iLink HTTP 调用封装。
+- `scripts/linux-service.sh:cmd_install` — Linux/systemd 安装编排，构建二进制、写默认配置和安装 service。
+- `scripts/linux-service.sh:cmd_upgrade` — Linux/systemd 升级编排，按服务原 active 状态 stop/start。
 
 ## 6. 已知约束 / 边界情况
 
@@ -80,9 +90,13 @@ implements:
 - 发送文本依赖最近消息上下文；如果 active bot 没有 `IlinkUserID` 或 `ContextToken`，控制台和 API 都会拒绝发送。代码锚点：`internal/app/app.go:152`、`internal/api/server.go:86`。
 - HTTP API token 为空或不匹配都会返回 unauthorized，不能绕过本地 `APIToken` 校验。代码锚点：`internal/api/server.go:65`。
 - 服务关闭时只处理 `os.Interrupt` 和 `SIGTERM`，收到信号后保存配置并退出。代码锚点：`internal/app/app.go:168`。
+- Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
+- `webot-msg.service` 使用部署用户运行，`ExecStart` 中的二进制路径和配置路径必须是绝对路径；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
+- 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 或删除 `~/.webot-msg/config/auth.json`；真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
 
 ## 7. 相关文档
 
 - `.codestable/requirements/bot-message-bridge.md` — 当前用户可感能力描述。
+- `docs/user/linux-systemd-deploy.md` — Linux systemd 安装、升级和服务控制说明。
 - `.codestable/requirements/VISION.md` — requirement 索引。
 - `.codestable/attention.md` — CodeStable 技能启动必读的项目注意事项入口。
