@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hacker News Brief"
+  short_description: "Generate Chinese morning briefs from HN front page"
+  default_prompt: "Use $hacker-news-brief to generate a Simplified Chinese morning brief from the current Hacker News front page."

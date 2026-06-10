@@ -1,0 +1,4 @@
+interface:
+  display_name: "webot-msg Send"
+  short_description: "Call local webot-msg HTTP message API"
+  default_prompt: "Use $webot-msg-send to send a text message through the local webot-msg service."
