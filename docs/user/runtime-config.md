@@ -5,7 +5,7 @@ component: 2026-06-10-runtime-toml-config
 status: current
 summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略和 Redis
 tags: [config, cli, control-console, autocomplete, logging, protection, redis]
-last_reviewed: 2026-06-10
+last_reviewed: 2026-06-11
 ---
 
 # 运行配置说明
@@ -198,7 +198,9 @@ webot-msg console
 
 控制台内 `/exit` 或 `/quit` 只退出这次控制台连接，不会停止 systemd 服务。停止服务仍使用 `systemctl stop webot-msg` 或部署脚本的 `stop`。
 
-直接前台运行 service 的交互式 TTY 控制台支持用 Tab 补全已声明命令和固定子命令，例如 `/log<Tab>` 补成 `/login`，`/pro<Tab>` 补成 `/protection `，`/protection st<Tab>` 补成 `/protection status`。该模式下按 Ctrl+C 会保存配置并退出进程，`/exit` 和 `/quit` 仍只关闭 console session。`webot-msg console` 连接运行中 service 时保持旧 line mode，不提供按键级 Tab 补全；脚本管道和非 TTY 输入也仍按普通行输入处理。
+直接前台运行 service 的交互式 TTY 控制台支持用 Tab 补全已声明命令和固定子命令，例如 `/log<Tab>` 补成 `/login`，`/pro<Tab>` 补成 `/protection `，`/protection st<Tab>` 补成 `/protection status`。该模式下按 Ctrl+C 会保存配置并退出进程，`/exit` 和 `/quit` 仍只关闭 console session。
+
+`webot-msg console` 连接运行中 service 时，如果本地 stdin/stdout 都是 TTY，也支持同一套 Tab 补全。为保持兼容，client 只在按 Enter 后向 socket 发送整行文本加换行，不发送协议头；脚本管道和非 TTY 输入仍按普通 line mode 处理，不提供按键级补全。
 
 ## 相关功能
 

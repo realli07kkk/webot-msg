@@ -67,6 +67,11 @@ func (r *TerminalLineReader) Write(p []byte) (int, error) {
 	return r.terminal.Write(p)
 }
 
+func (r *TerminalLineReader) SetPrompt(prompt string) {
+	r.terminal.SetPrompt(prompt)
+	_, _ = r.terminal.Write(nil)
+}
+
 func (r *TerminalLineReader) Close() error {
 	var err error
 	r.once.Do(func() {

@@ -14,6 +14,7 @@ import (
 	"github.com/realli07kkk/webot-msg/internal/logfile"
 	"github.com/realli07kkk/webot-msg/internal/protection"
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -28,7 +29,13 @@ func main() {
 	}
 
 	if opts.command == "console" {
-		if err := control.Attach(resolved.Control.SocketPath, os.Stdin, os.Stdout); err != nil {
+		attach := control.Attach
+		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+			attach = func(socketPath string, in io.Reader, out io.Writer) error {
+				return control.AttachInteractive(socketPath, os.Stdin, os.Stdout)
+			}
+		}
+		if err := attach(resolved.Control.SocketPath, os.Stdin, os.Stdout); err != nil {
 			log.Fatal(err)
 		}
 		return

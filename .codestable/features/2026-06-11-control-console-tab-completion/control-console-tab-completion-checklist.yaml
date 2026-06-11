@@ -1,0 +1,111 @@
+feature: 2026-06-11-control-console-tab-completion
+created: 2026-06-11
+
+steps:
+  - action: "计算节点：实现 output splitter 纯逻辑（字节流切分为行事件 + prompt 尾部，支持分包自愈）"
+    exit_signal: "不连 socket，单测覆盖整行、分包、广播 \"\\n> \" 尾部、空数据四类输入的切分结果"
+    status: done
+  - action: "编排骨架：实现 interactive attach 会话（Dial → MakeRaw → splitter 读协程 + ReadLine 主循环 → 整行+LF 上行），CLI 入口 console 分支按 TTY 分流"
+    exit_signal: "本地起 service 后 webot-msg console 中 /pro<Tab> 补全为 \"/protection \"，Enter 后命令执行成功"
+    status: done
+  - action: "中断与退出语义：处理 Ctrl+C、Ctrl+D/EOF、server 主动关闭三条退出路径，所有路径恢复终端状态"
+    exit_signal: "三条退出路径手工冒烟后 stty 确认终端状态正常，service 均继续运行"
+    status: done
+  - action: "兼容守护：非 TTY 透传回归用例 + fake old server 测试断言上行字节流仅含用户行与换行"
+    exit_signal: "printf '/exit\\n' | webot-msg console 行为不变；兼容测试与 go test ./... 全部通过"
+    status: done
+  - action: "文档与落档：架构术语收窄（line mode 仅非 TTY）、requirement 边界改写、用户文档补充 console 补全说明"
+    exit_signal: "文档与实际行为一致，验收契约逐条可核对"
+    status: done
+
+checks:
+  - item: "internal/control 暴露 AttachInteractive(socketPath, in, out) 公开入口，仅 TTY 路径使用"
+    source: 名词契约
+    status: passed
+  - item: "output splitter 行为符合 2.1 示例：整行→行事件、未换行尾部→prompt、分包瞬时半行可自愈"
+    source: 名词契约
+    status: passed
+  - item: "Attach 保持原签名与 io.Copy 透传行为，作为非 TTY 路径"
+    source: 名词契约
+    status: passed
+  - item: "console.TerminalLineReader 既有方法签名零变化（允许新增最小方法）"
+    source: 名词契约
+    status: passed
+  - item: "CLI console 分支按 stdin/stdout TTY 判定分流：TTY → interactive attach，非 TTY → 既有 Attach"
+    source: 编排骨架
+    status: passed
+  - item: "Dial 成功后才 MakeRaw；EOF、interrupt、server 关闭、连接错误所有退出路径均恢复终端状态"
+    source: 流程级约束
+    status: passed
+  - item: "上行字节流契约冻结：仅用户行 + LF，无协议头或控制字节"
+    source: 流程级约束
+    status: passed
+  - item: "splitter 行事件与 prompt 更新由单读协程按到达顺序串行写入 TerminalLineReader，无并发写终端"
+    source: 流程级约束
+    status: passed
+  - item: "Tab 补全纯本地计算，不产生任何 socket 写出"
+    source: 流程级约束
+    status: passed
+  - item: "卸载性：删除 interactive 入口与 splitter、CLI 分流退回直接 Attach 后行为完全回到现状"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点：cmd/webot-msg/main.go console 分支 TTY 分流（修改）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：internal/control 新增 interactive attach 公开入口（新增）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：client 端 TerminalLineReader + AutoCompleteCallback 挂接到本地 stdin/stdout + raw mode（新增）"
+    source: 挂载点
+    status: passed
+  - item: "internal/control/server.go 与 internal/console/console.go 命令循环零行为 diff（测试与注释除外）"
+    source: 范围守护
+    status: passed
+  - item: "无 socket 协议头/魔数/版本字符串新增（grep 核对）"
+    source: 范围守护
+    status: passed
+  - item: "补全候选仍仅来自 commandSpecs 静态表，无动态候选源"
+    source: 范围守护
+    status: passed
+  - item: "无新增 TOML 配置项、HTTP API 路由、auth store 字段、Redis key"
+    source: 范围守护
+    status: passed
+  - item: "无 SIGWINCH 处理；本地前台控制台（console.Run 路径）行为零改动"
+    source: 范围守护
+    status: passed
+  - item: "TTY 下 /pro<Tab> → 行变 \"/protection \" 不执行；Enter 后 server 正常响应"
+    source: 验收场景
+    status: passed
+  - item: "/protection st<Tab> → /protection status；/b<Tab> → 补到公共前缀 /bot 不加空格"
+    source: 验收场景
+    status: passed
+  - item: "普通文本 hello<Tab> → 行不变，不触发发送"
+    source: 验收场景
+    status: passed
+  - item: "编辑中收到广播消息：消息显示在编辑行上方，编辑内容保留，提交行不被污染"
+    source: 验收场景
+    status: passed
+  - item: "/bots 二级 prompt 下数字输入 Tab 不动；空行回车 → server 按取消处理"
+    source: 验收场景
+    status: passed
+  - item: "/login 期间二维码多行输出正常逐行显示，会话不乱"
+    source: 验收场景
+    status: passed
+  - item: "Ctrl+C → client 退出且终端无 raw mode 残留，service 与监听继续运行"
+    source: 验收场景
+    status: passed
+  - item: "Ctrl+D（空编辑行）→ 上行写端关闭，server 端会话结束，client 正常退出"
+    source: 验收场景
+    status: passed
+  - item: "service 未运行时 TTY 下 webot-msg console 报连接错误退出，终端状态无残留"
+    source: 验收场景
+    status: passed
+  - item: "会话中 systemctl stop webot-msg → client 感知连接关闭，恢复终端退出，不挂死"
+    source: 验收场景
+    status: passed
+  - item: "printf '/exit\\n' | webot-msg console → 线模式透传，输出与现状一致"
+    source: 验收场景
+    status: passed
+  - item: "fake old server 断言：上行字节流仅含用户输入行与换行"
+    source: 验收场景
+    status: passed
