@@ -1,7 +1,7 @@
 package console
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +14,7 @@ type ExitReason int
 const (
 	ExitReasonInputClosed ExitReason = iota
 	ExitReasonCommand
+	ExitReasonInterrupt
 )
 
 type Controller interface {
@@ -29,32 +30,40 @@ type Controller interface {
 }
 
 func Run(controller Controller) ExitReason {
+	if reader, ok := NewLocalTerminalLineReader(os.Stdin, os.Stdout); ok {
+		return RunWithLineReader(controller, reader, reader)
+	}
 	return RunWithIO(controller, os.Stdin, os.Stdout)
 }
 
 func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
-	reader := bufio.NewReader(in)
+	return RunWithLineReader(controller, NewBufferedLineReader(in, out), out)
+}
+
+func RunWithLineReader(controller Controller, reader LineReader, out io.Writer) ExitReason {
+	defer reader.Close()
+
 	activeBotID := controller.DefaultBotID()
 
 	fmt.Fprintln(out, "\nConsole commands:")
-	fmt.Fprintln(out, "  /login       - Scan QR code to add a new user/bot.")
-	fmt.Fprintln(out, "  /bots        - List all logged-in bots and select active one.")
-	fmt.Fprintln(out, "  /bot <num>   - Select bot by list index.")
-	fmt.Fprintln(out, "  /del <num>   - Delete bot by list index.")
-	fmt.Fprintln(out, "  /protection enable|disable|status - Control send protection.")
-	fmt.Fprintln(out, "  /exit        - Exit this console session.")
-	fmt.Fprintln(out, "  /quit        - Exit this console session.")
+	for _, spec := range commandSpecs {
+		fmt.Fprintf(out, "  %s\n", spec.Usage)
+	}
 	fmt.Fprintln(out, "  [Text]       - Send message using active user to themselves.")
 
 	for {
+		prompt := ""
 		if activeBotID == "" {
-			fmt.Fprint(out, "[No Bot Selected] > ")
+			prompt = "[No Bot Selected] > "
 		} else {
-			fmt.Fprintf(out, "[%s] > ", activeBotID)
+			prompt = fmt.Sprintf("[%s] > ", activeBotID)
 		}
 
-		text, err := reader.ReadString('\n')
+		text, err := reader.ReadLine(prompt)
 		if err != nil {
+			if errors.Is(err, ErrInterrupted) {
+				return ExitReasonInterrupt
+			}
 			return ExitReasonInputClosed
 		}
 		text = strings.TrimSpace(text)
@@ -79,9 +88,11 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 
 		if text == "/bots" {
 			controller.PrintBots(activeBotID, out)
-			fmt.Fprint(out, "Enter number to select (or enter to cancel): ")
-			numStr, err := reader.ReadString('\n')
+			numStr, err := reader.ReadLine("Enter number to select (or enter to cancel): ")
 			if err != nil {
+				if errors.Is(err, ErrInterrupted) {
+					return ExitReasonInterrupt
+				}
 				return ExitReasonInputClosed
 			}
 			numStr = strings.TrimSpace(numStr)
@@ -139,7 +150,7 @@ func RunWithIO(controller Controller, in io.Reader, out io.Writer) ExitReason {
 func handleProtectionCommand(text string, controller Controller, activeBotID string, out io.Writer) {
 	parts := strings.Fields(text)
 	if len(parts) != 2 {
-		fmt.Fprintln(out, "Usage: /protection enable|disable|status")
+		fmt.Fprintln(out, protectionUsage())
 		return
 	}
 
@@ -155,6 +166,6 @@ func handleProtectionCommand(text string, controller Controller, activeBotID str
 	case "status":
 		controller.PrintProtectionStatus(activeBotID, out)
 	default:
-		fmt.Fprintln(out, "Usage: /protection enable|disable|status")
+		fmt.Fprintln(out, protectionUsage())
 	}
 }

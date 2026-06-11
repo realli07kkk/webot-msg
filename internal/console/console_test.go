@@ -32,6 +32,14 @@ func TestRunReturnsInputClosedWhenStdinCloses(t *testing.T) {
 	}
 }
 
+func TestRunReturnsInterruptForReaderInterrupt(t *testing.T) {
+	got := RunWithLineReader(&fakeController{}, interruptingLineReader{}, io.Discard)
+
+	if got != ExitReasonInterrupt {
+		t.Fatalf("Run() = %v, want %v", got, ExitReasonInterrupt)
+	}
+}
+
 func TestRunKeepsActiveBotSessionLocal(t *testing.T) {
 	controller := &fakeController{
 		selectBotIDs: map[int]string{
@@ -121,6 +129,16 @@ type fakeController struct {
 
 	enableProtectionCalls  int
 	disableProtectionCalls int
+}
+
+type interruptingLineReader struct{}
+
+func (interruptingLineReader) ReadLine(string) (string, error) {
+	return "", ErrInterrupted
+}
+
+func (interruptingLineReader) Close() error {
+	return nil
 }
 
 func (f *fakeController) DefaultBotID() string {

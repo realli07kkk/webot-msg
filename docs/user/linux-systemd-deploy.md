@@ -4,7 +4,7 @@ slug: linux-systemd-deploy
 component: 2026-06-10-linux-systemd-deploy
 status: current
 summary: 说明如何在 Linux systemd 环境安装、升级和控制 webot-msg 服务
-tags: [deploy, linux, systemd]
+tags: [deploy, linux, systemd, control-console]
 last_reviewed: 2026-06-10
 ---
 
@@ -83,6 +83,8 @@ webot-msg console
 ```bash
 ./scripts/linux-service.sh stop
 ```
+
+`webot-msg console` 为了兼容已运行的旧 service，保持旧 line mode 字节流，不发送额外协议头，也不提供按键级 Tab 补全。通过管道执行命令时仍使用行输入，例如 `printf '/exit\n' | webot-msg console`。
 
 ## 升级
 

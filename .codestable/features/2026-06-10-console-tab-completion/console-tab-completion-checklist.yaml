@@ -1,0 +1,105 @@
+feature: 2026-06-10-console-tab-completion
+created: 2026-06-10
+
+steps:
+  - action: "命令元数据与纯补全函数：抽出静态 command spec，实现 CompleteCommandLine，覆盖所有已声明 Console 命令和所有已声明固定子命令"
+    exit_signal: "不启动 console 也能用单元测试证明 /login、/exit、/protection 和 /protection status 等补全结果，以及公共前缀、无匹配和普通文本不补全"
+    status: done
+  - action: "Console LineReader 接入：把 console loop 改为通过 LineReader 读行，保留 RunWithIO 的 buffered 行读取兼容入口"
+    exit_signal: "现有 console 单元测试不需要 TTY 仍能通过，原有命令和普通文本发送语义不变"
+    status: done
+  - action: "本地 TTY terminal reader：在直接 console 入口接入 x/term.Terminal 和 raw mode，Tab 调用同一补全函数"
+    exit_signal: "TTY 冒烟中 /log<Tab>、/pro<Tab> 和 /protection st<Tab> 在 Enter 前补全，退出后终端状态恢复"
+    status: done
+  - action: "Control console 兼容守护：保持 webot-msg console 旧 line mode，不发送协议头，并补 Attach 级测试防止 mixed-version 误输入"
+    exit_signal: "fake old server 只收到用户输入；printf '/exit\\n' | webot-msg console 仍能退出"
+    status: done
+  - action: "文档和回归覆盖：更新用户文档、架构/需求落档，并补齐 control client/server 兼容性相关测试"
+    exit_signal: "go test ./... 通过，文档明确 Tab 补全只面向交互式 TTY"
+    status: done
+
+checks:
+  - item: "CommandSpec 表达全部已声明 Console 命令和固定子命令，help 文本和补全候选来自同一份命令元数据"
+    source: 名词契约
+    status: passed
+  - item: "CompleteCommandLine 基于 command spec 中声明的全部顶层命令和全部固定子命令完成补全，并返回替换行、cursor 位置和处理标记"
+    source: 名词契约
+    status: passed
+  - item: "BufferedLineReader 保持当前按行读取行为，服务非 TTY、测试和脚本输入使用 line mode fallback"
+    source: 名词契约
+    status: passed
+  - item: "TerminalLineReader 基于 golang.org/x/term.Terminal，设置 prompt 和 AutoCompleteCallback"
+    source: 名词契约
+    status: passed
+  - item: "console loop 仍是唯一命令分发入口，只有 Enter 后的完整行才调用 Controller 或 SendText"
+    source: 编排骨架
+    status: passed
+  - item: "直接前台运行 service 的本地 stdin/stdout 都是 TTY 且 raw mode 设置成功时进入 TerminalLineReader，否则保持 line mode fallback"
+    source: 编排骨架
+    status: passed
+  - item: "webot-msg console 不发送 mode header，不切 raw mode；control server 继续通过 RunWithIO 按行读取"
+    source: 编排骨架
+    status: passed
+  - item: "本地 TTY raw mode 设置失败或 Ctrl+C / /exit 返回时不破坏终端状态；Ctrl+C 语义和普通 EOF 能区分"
+    source: 流程级约束
+    status: passed
+  - item: "Tab 补全不调用 Controller，不触发 /login、SendText、/protection enable 或 active bot 切换"
+    source: 流程级约束
+    status: passed
+  - item: "补全候选只包含 command spec 中声明的静态 Console 命令和固定子命令，不读取或展示 BotToken、APIToken、ContextToken、Redis password 或消息内容"
+    source: 流程级约束
+    status: passed
+  - item: "删除 TerminalLineReader 和 CompleteCommandLine 后，console 可回到当前按行读取行为且没有配置、持久化、control 协议或 API 残留"
+    source: 挂载点
+    status: passed
+  - item: "不补全 bot 序号、botID、Redis 配置、文件路径、历史消息或用户普通文本"
+    source: 范围守护
+    status: passed
+  - item: "不新增 Bash/Zsh shell completion"
+    source: 范围守护
+    status: passed
+  - item: "不把 console 改成完整命令框架；命令执行分发保持现有轻量结构"
+    source: 范围守护
+    status: passed
+  - item: "不新增 HTTP API、配置项、auth store 字段或持久化状态"
+    source: 范围守护
+    status: passed
+  - item: "不在 webot-msg console、nc 或 socat 直接连接 control socket 时提供 Tab 补全"
+    source: 范围守护
+    status: passed
+  - item: "交互式 console 中键入 /pro 后按 Tab，当前行变为 `/protection ` 且不会执行命令"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 /log 后按 Tab，当前行变为 /login 且不会执行命令"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 /ex 后按 Tab，当前行变为 /exit 且不会退出；只有按 Enter 后才退出"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 /protection st 后按 Tab，当前行变为 /protection status，按 Enter 后才查询状态"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 /b 后按 Tab，最多补到 /bot 公共前缀，不自动加空格或选择 /bots"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 /unknown 后按 Tab，输入不变；按 Enter 后仍走现有未知 slash command 处理"
+    source: 验收场景
+    status: passed
+  - item: "交互式 console 中键入 hello 后按 Tab，不触发命令补全，不调用 SendText；只有按 Enter 后才按普通文本发送"
+    source: 验收场景
+    status: passed
+  - item: "/protection 后没有进一步前缀时按 Tab，不自动选择 enable、disable 或 status"
+    source: 验收场景
+    status: passed
+  - item: "非 TTY 测试用 bytes.Buffer 传入 /protection status 和 /exit 仍按行执行，测试不需要 terminal raw mode"
+    source: 验收场景
+    status: passed
+  - item: "新 webot-msg console 连接不支持 mode header 的旧 service，并传入 /exit 时，旧 service 只收到 /exit，不会收到 WEBOT-MSG-CONSOLE 协议文本"
+    source: 验收场景
+    status: passed
+  - item: "printf '/exit\\n' | webot-msg console 仍能退出 control session"
+    source: 验收场景
+    status: passed
+  - item: "补全期间后台收到消息广播输出不会执行未完成输入，也不能破坏最终 Enter 后提交的命令内容"
+    source: 验收场景
+    status: passed

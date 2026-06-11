@@ -135,7 +135,13 @@ func (a *App) Run(port int) error {
 		}
 	}()
 
-	console.Run(a)
+	if console.Run(a) == console.ExitReasonInterrupt {
+		fmt.Println("\nReceived interrupt. Saving config and exiting...")
+		if err := a.store.Save(); err != nil {
+			return fmt.Errorf("save config failed: %w", err)
+		}
+		return nil
+	}
 
 	fmt.Println("Console closed. Service continues running. Use systemd or Ctrl+C to stop the process.")
 	select {}
@@ -356,6 +362,9 @@ func (a *App) handleShutdownSignal() {
 	go func() {
 		<-sigChan
 		fmt.Println("\nReceived shutdown signal. Saving config and exiting...")
+		if err := console.RestoreActiveTerminal(); err != nil {
+			log.Printf("Restore terminal failed: %v", err)
+		}
 		if err := a.store.Save(); err != nil {
 			log.Printf("Save config failed: %v", err)
 		}
