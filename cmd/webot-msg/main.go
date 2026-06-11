@@ -76,9 +76,10 @@ func main() {
 			ActiveWindow:            resolved.Protection.ActiveWindowDuration,
 			TimeWarningBefore:       resolved.Protection.TimeWarningBeforeDuration,
 		},
-		ProtectionEnabled: guard.Enabled(),
-		ReminderText:      resolved.Protection.ReminderText,
-		TimeCheckInterval: resolved.Protection.TimeCheckIntervalDuration,
+		ProtectionEnabled:   guard.Enabled(),
+		ProtectionStatePath: resolved.ProtectionStatePath,
+		ReminderText:        resolved.Protection.ReminderText,
+		TimeCheckInterval:   resolved.Protection.TimeCheckIntervalDuration,
 	})
 	if err := application.Run(resolved.API.Port); err != nil {
 		log.Fatal(err)
@@ -100,7 +101,7 @@ func legacyProtectionWarning(cfg runtimeconfig.Config) string {
 	if !cfg.HasLegacyProtectionSettings() {
 		return ""
 	}
-	return "legacy [protection] config is ignored; configure [redis] and run /protection enable in webot-msg console"
+	return "legacy [protection] config is ignored; configure [redis] and run /protection enable once in webot-msg console"
 }
 
 type cliOptions struct {

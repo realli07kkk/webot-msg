@@ -117,6 +117,9 @@ func TestDefaultConfigPath(t *testing.T) {
 	if DefaultConfigPath != "~/.webot-msg/config/webot-msg.toml" {
 		t.Fatalf("DefaultConfigPath = %q", DefaultConfigPath)
 	}
+	if DefaultProtectionStatePath != "~/.webot-msg/state/protection.json" {
+		t.Fatalf("DefaultProtectionStatePath = %q", DefaultProtectionStatePath)
+	}
 }
 
 func TestLoadFileRejectsUnknownKeys(t *testing.T) {
@@ -180,6 +183,10 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	wantSocketPath := filepath.Join(home, ".webot-msg", "webot-msg.sock")
 	if resolved.Control.SocketPath != wantSocketPath {
 		t.Fatalf("Control.SocketPath = %q, want %q", resolved.Control.SocketPath, wantSocketPath)
+	}
+	wantProtectionStatePath := filepath.Join(home, ".webot-msg", "state", "protection.json")
+	if resolved.ProtectionStatePath != wantProtectionStatePath {
+		t.Fatalf("ProtectionStatePath = %q, want %q", resolved.ProtectionStatePath, wantProtectionStatePath)
 	}
 	if resolved.Log.MaxSizeBytes != 1024*1024*1024 {
 		t.Fatalf("Log.MaxSizeBytes = %d, want %d", resolved.Log.MaxSizeBytes, int64(1024*1024*1024))

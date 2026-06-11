@@ -32,26 +32,28 @@ type client interface {
 }
 
 type Options struct {
-	AuthPath          string
-	BaseURL           string
-	ControlSocketPath string
-	Guard             protection.Guard
-	ProtectionConfig  protection.EnableConfig
-	ProtectionEnabled bool
-	ReminderText      string
-	TimeCheckInterval time.Duration
+	AuthPath            string
+	BaseURL             string
+	ControlSocketPath   string
+	Guard               protection.Guard
+	ProtectionConfig    protection.EnableConfig
+	ProtectionEnabled   bool
+	ProtectionStatePath string
+	ReminderText        string
+	TimeCheckInterval   time.Duration
 }
 
 type App struct {
-	store             *config.Store
-	client            client
-	controlSocketPath string
-	guard             protection.Guard
-	runtimeGuard      *protection.RuntimeGuard
-	protectionConfig  protection.EnableConfig
-	protectionEnabled bool
-	reminderText      string
-	timeCheckInterval time.Duration
+	store                *config.Store
+	client               client
+	controlSocketPath    string
+	guard                protection.Guard
+	runtimeGuard         *protection.RuntimeGuard
+	protectionConfig     protection.EnableConfig
+	protectionEnabled    bool
+	protectionStateStore *protection.StateStore
+	reminderText         string
+	timeCheckInterval    time.Duration
 
 	monitorMu                 sync.Mutex
 	runningMonitors           map[string]struct{}
@@ -71,6 +73,10 @@ func New(opts Options) *App {
 	if opts.TimeCheckInterval <= 0 {
 		opts.TimeCheckInterval = time.Minute
 	}
+	var protectionStateStore *protection.StateStore
+	if opts.ProtectionStatePath != "" {
+		protectionStateStore = protection.NewStateStore(opts.ProtectionStatePath)
+	}
 	return &App{
 		store:                     config.NewStore(opts.AuthPath),
 		client:                    ilink.NewClient(opts.BaseURL),
@@ -79,6 +85,7 @@ func New(opts Options) *App {
 		runtimeGuard:              runtimeGuard,
 		protectionConfig:          opts.ProtectionConfig,
 		protectionEnabled:         opts.ProtectionEnabled,
+		protectionStateStore:      protectionStateStore,
 		reminderText:              opts.ReminderText,
 		timeCheckInterval:         opts.TimeCheckInterval,
 		runningMonitors:           make(map[string]struct{}),
@@ -94,6 +101,11 @@ func (a *App) Run(port int) error {
 	if err := a.store.Load(); err != nil {
 		return fmt.Errorf("load config failed: %w", err)
 	}
+	var restoreWarnings io.Writer
+	if isTerminal(os.Stderr) {
+		restoreWarnings = os.Stderr
+	}
+	a.restoreProtectionState(restoreWarnings)
 
 	if a.store.Count() == 0 {
 		if isTerminal(os.Stdin) {
@@ -215,6 +227,7 @@ func (a *App) EnableProtection(out io.Writer) error {
 		a.startProtectionChecker(botID)
 	}
 	fmt.Fprintf(out, "Protection enabled. Redis key prefix: %s\n", a.protectionConfig.KeyPrefix)
+	a.persistProtectionState(out, true)
 	return nil
 }
 
@@ -226,7 +239,55 @@ func (a *App) DisableProtection(out io.Writer) error {
 	a.runtimeGuard.Disable()
 	a.protectionEnabled = false
 	fmt.Fprintln(out, "Protection disabled.")
+	a.persistProtectionState(out, false)
 	return nil
+}
+
+func (a *App) persistProtectionState(out io.Writer, enabled bool) {
+	if a.protectionStateStore == nil {
+		return
+	}
+	if err := a.protectionStateStore.Save(protection.PersistedState{ProtectionEnabled: enabled}); err != nil {
+		message := fmt.Sprintf("persist protection state failed: %v", err)
+		log.Print(message)
+		fmt.Fprintf(out, "Warning: %s\n", message)
+	}
+}
+
+func (a *App) restoreProtectionState(warnOut io.Writer) {
+	if a.protectionStateStore == nil {
+		return
+	}
+
+	state, err := a.protectionStateStore.Load()
+	if err != nil {
+		a.warnProtectionRestore(warnOut, "protection state file is unreadable; starting with protection disabled: %v", err)
+		return
+	}
+	if !state.ProtectionEnabled {
+		return
+	}
+	if a.runtimeGuard == nil {
+		a.warnProtectionRestore(warnOut, "protection auto-restore failed; runtime protection guard is not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.runtimeGuard.Enable(ctx, a.protectionConfig); err != nil {
+		a.warnProtectionRestore(warnOut, "protection auto-restore failed; protection remains disabled. Run /protection enable after fixing Redis: %v", err)
+		return
+	}
+	a.protectionEnabled = true
+	log.Printf("Protection auto-restore succeeded. Redis key prefix: %s", a.protectionConfig.KeyPrefix)
+}
+
+func (a *App) warnProtectionRestore(out io.Writer, format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	log.Print(message)
+	if out != nil {
+		fmt.Fprintf(out, "Warning: %s\n", message)
+	}
 }
 
 func (a *App) PrintProtectionStatus(activeBotID string, out io.Writer) {

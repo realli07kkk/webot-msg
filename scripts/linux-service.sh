@@ -367,7 +367,7 @@ cmd_upgrade() {
 	if [[ -e "${CONFIG_PATH}" ]]; then
 		info "config exists, keeping: ${CONFIG_PATH}"
 		if grep -Eq '^[[:space:]]*\[protection\][[:space:]]*$' "${CONFIG_PATH}"; then
-			info "legacy [protection] section is ignored; run webot-msg console and /protection enable to enable protection"
+			info "legacy [protection] section is ignored; configure [redis] and run /protection enable once to enable protection; future restarts restore it automatically"
 		fi
 		ensure_redis_config_section
 	else

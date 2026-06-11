@@ -15,31 +15,33 @@ import (
 )
 
 const (
-	DefaultPort              = 26322
-	DefaultConfigPath        = "~/.webot-msg/config/webot-msg.toml"
-	DefaultAuthPath          = "~/.webot-msg/config/auth.json"
-	DefaultControlSocketPath = "~/.webot-msg/webot-msg.sock"
-	DefaultLogPath           = "~/.webot-msg/logs/webot-msg.log"
-	DefaultLogMaxSize        = "100MB"
-	DefaultRedisKeyPrefix    = "webot-msg"
-	DefaultActiveWindow      = "24h"
-	DefaultTimeWarningBefore = "30m"
-	DefaultTimeCheckInterval = "1m"
-	DefaultReminderText      = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
-	LegacyAuthPath           = "./config/auth.json"
+	DefaultPort                = 26322
+	DefaultConfigPath          = "~/.webot-msg/config/webot-msg.toml"
+	DefaultAuthPath            = "~/.webot-msg/config/auth.json"
+	DefaultControlSocketPath   = "~/.webot-msg/webot-msg.sock"
+	DefaultProtectionStatePath = "~/.webot-msg/state/protection.json"
+	DefaultLogPath             = "~/.webot-msg/logs/webot-msg.log"
+	DefaultLogMaxSize          = "100MB"
+	DefaultRedisKeyPrefix      = "webot-msg"
+	DefaultActiveWindow        = "24h"
+	DefaultTimeWarningBefore   = "30m"
+	DefaultTimeCheckInterval   = "1m"
+	DefaultReminderText        = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
+	LegacyAuthPath             = "./config/auth.json"
 )
 
 var userHomeDir = os.UserHomeDir
 
 type Config struct {
-	API              APIConfig              `toml:"api"`
-	Storage          StorageConfig          `toml:"storage"`
-	Control          ControlConfig          `toml:"control"`
-	Ilink            IlinkConfig            `toml:"ilink"`
-	Log              LogConfig              `toml:"log"`
-	Protection       ProtectionConfig       `toml:"-"`
-	LegacyProtection LegacyProtectionConfig `toml:"protection"`
-	Redis            RedisConfig            `toml:"redis"`
+	API                 APIConfig              `toml:"api"`
+	Storage             StorageConfig          `toml:"storage"`
+	Control             ControlConfig          `toml:"control"`
+	Ilink               IlinkConfig            `toml:"ilink"`
+	Log                 LogConfig              `toml:"log"`
+	Protection          ProtectionConfig       `toml:"-"`
+	ProtectionStatePath string                 `toml:"-"`
+	LegacyProtection    LegacyProtectionConfig `toml:"protection"`
+	Redis               RedisConfig            `toml:"redis"`
 }
 
 type APIConfig struct {
@@ -131,6 +133,7 @@ func Default() Config {
 			TimeCheckInterval:       DefaultTimeCheckInterval,
 			ReminderText:            DefaultReminderText,
 		},
+		ProtectionStatePath: DefaultProtectionStatePath,
 		Redis: RedisConfig{
 			KeyPrefix: DefaultRedisKeyPrefix,
 		},
@@ -206,6 +209,15 @@ func (c Config) Resolve() (Config, error) {
 	if err := resolveProtection(&resolved); err != nil {
 		return Config{}, err
 	}
+
+	protectionStatePath, err := expandHome(resolved.ProtectionStatePath)
+	if err != nil {
+		return Config{}, fmt.Errorf("protection state path: %w", err)
+	}
+	if protectionStatePath == "" {
+		return Config{}, fmt.Errorf("protection state path: must not be empty")
+	}
+	resolved.ProtectionStatePath = protectionStatePath
 
 	return resolved, nil
 }

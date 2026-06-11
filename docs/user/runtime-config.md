@@ -112,7 +112,9 @@ webot-msg
 /protection enable
 ```
 
-开启后，程序使用 Redis 按 bot 记录最近一次微信 app 主动对话后的下发次数和 24h 窗口。
+开启后，程序会把保护开关写入 `~/.webot-msg/state/protection.json`。服务重启或升级后会读取这个状态文件；如果记录为开启，程序会在启动时尝试一次自动恢复保护。Redis 不可用时恢复失败并告警，保护保持关闭，状态文件不会被改写，你可以修复 Redis 后手动执行 `/protection enable`。
+
+保护开启后，程序使用 Redis 按 bot 记录最近一次微信 app 主动对话后的下发次数和 24h 窗口。
 
 - 下发次数快达到内置限制时，程序会用最后的下发额度发送保护提醒，随后冻结普通文本发送。
 - 24h 主动对话窗口快结束时，程序也会发送提醒并冻结普通文本发送。
@@ -120,7 +122,7 @@ webot-msg
 - 保护状态按 bot 分开存储，内置规则全局共用；一个 bot 冻结不会影响另一个 bot。
 - Redis 不可用、认证失败或保护状态读写失败时，保护模式会 fail closed，拒绝普通文本发送，避免静默越过限制。
 - 查看当前 active bot 离触发限制还剩多少次数或时间，可以执行 `/protection status`。
-- 关闭保护可以执行 `/protection disable`；服务重启后保护也会回到默认关闭状态。
+- 关闭保护可以执行 `/protection disable`；关闭状态也会写入状态文件，服务重启后保持关闭。
 
 `redis.password` 不会写入日志。建议把带密码的真实配置文件留在部署机器本地，不提交到 Git。
 
@@ -135,6 +137,8 @@ webot-msg
     webot-msg.toml
   logs/
     webot-msg.log
+  state/
+    protection.json
   webot-msg.sock
 ```
 

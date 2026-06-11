@@ -1,0 +1,93 @@
+feature: 2026-06-11-protection-state-persistence
+created: 2026-06-11
+
+steps:
+  - action: "计算节点：实现保护开关状态 store（Load/Save、文件缺失/损坏语义、临时文件 + rename 原子写、目录 0700 文件 0600），归属 internal/protection 新文件"
+    exit_signal: "单测覆盖文件缺失、损坏 JSON、正常往返、权限四类场景"
+    status: done
+  - action: "持久化挂接：EnableProtection / DisableProtection 成功路径写状态文件，默认路径常量在 runtimeconfig 定义并随 Resolve 展开后注入 App"
+    exit_signal: "enable 后文件内容 protection_enabled=true，disable 后为 false；Save 失败时命令仍成功且有警告输出"
+    status: done
+  - action: "启动恢复：app.Run 在 auth store 加载后、startMonitor 与 API server 启动前插入恢复步骤，enabled=true 时只尝试一次运行期 enable，失败告警且不改写状态文件"
+    exit_signal: "状态为开启 + Redis 可用 → 启动后 status 显示 enabled；Redis 不可用 → 启动成功、保持关闭、日志有告警且状态文件未被改写"
+    status: done
+  - action: "测试与文档：补齐验收场景测试，更新用户文档升级说明为保护状态自动恢复，按 attention.md 同步检查 scripts/linux-service.sh 与 docs/user/linux-systemd-deploy.md"
+    exit_signal: "go test ./... 通过；文档不再要求升级后重新执行 /protection enable"
+    status: done
+
+checks:
+  - item: "StateStore 契约：NewStateStore(path)、Load() 文件不存在返回零值不报错、损坏返回零值 + error、Save 原子写"
+    source: 名词契约
+    status: passed
+  - item: "PersistedState JSON 契约：仅含 protection_enabled 布尔字段"
+    source: 名词契约
+    status: passed
+  - item: "runtimeconfig 新增 state 路径默认常量并在 Resolve 中展开，不暴露 TOML key"
+    source: 名词契约
+    status: passed
+  - item: "启动恢复发生在 auth store 加载后、startMonitor 与 API server 启动前，不存在状态为开启但 API 已放行未保护发送的窗口"
+    source: 编排骨架
+    status: passed
+  - item: "恢复失败不阻止服务启动、不改写状态文件；Save 失败不改变命令结果但有可见警告"
+    source: 流程级约束
+    status: passed
+  - item: "重复 enable/disable 写文件幂等；原子 rename 保证读侧不见半截 JSON；并发写 last-writer-wins，不引入新锁层级"
+    source: 流程级约束
+    status: passed
+  - item: "恢复成功 / 失败 / 文件损坏各有日志（交互终端下失败含 stderr）；不打印 Redis password 或带密码 URL"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点：状态文件 ~/.webot-msg/state/protection.json（含 state/ 目录）— 新增"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：app.Run 启动序列中读状态并尝试恢复的步骤 — 新增"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：EnableProtection / DisableProtection 成功路径写状态文件 — 修改"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：runtimeconfig 的 state 路径默认值与解析 — 新增"
+    source: 挂载点
+    status: passed
+  - item: "代码中不存在恢复失败后的后台重试 / 定时重连逻辑"
+    source: 范围守护
+    status: passed
+  - item: "TOML 解析不新增状态文件路径相关 key，runtimeconfig 的 TOML 契约零变化"
+    source: 范围守护
+    status: passed
+  - item: "状态文件内容不含 redis 配置、password、BotToken、APIToken、ContextToken"
+    source: 范围守护
+    status: passed
+  - item: "无代码把保护开关写入 TOML、auth.json 或 Redis"
+    source: 范围守护
+    status: passed
+  - item: "控制台命令面不新增子命令，/protection enable|disable|status 行为面（除新增警告输出外）不变"
+    source: 范围守护
+    status: passed
+  - item: "Redis 可用执行 /protection enable → 状态文件存在、内容 true、文件 0600、state/ 目录 0700"
+    source: 验收场景
+    status: passed
+  - item: "enable 后重启（Redis 可用）→ 启动日志含恢复成功记录、status 显示 enabled、发送经过 Redis guard、已登录 bot 检查器运行"
+    source: 验收场景
+    status: passed
+  - item: "disable 后重启 → 文件内容 false，启动后保护关闭且无恢复尝试"
+    source: 验收场景
+    status: passed
+  - item: "状态文件不存在（全新安装 / 旧版本升级）→ 启动行为与现状一致，保护关闭无告警"
+    source: 验收场景
+    status: passed
+  - item: "状态为开启但启动时 Redis 不可用 → 服务正常启动、保护关闭、有告警、状态文件未改写、Redis 恢复后不自动开启"
+    source: 验收场景
+    status: passed
+  - item: "状态文件非法 JSON → 正常启动、保护关闭、有损坏告警；之后 enable 成功重写为合法内容"
+    source: 验收场景
+    status: passed
+  - item: "状态文件路径不可写时 enable → 命令输出持久化失败警告，但保护在当前进程内已开启"
+    source: 验收场景
+    status: passed
+  - item: "先 enable 再 disable 再重启 → 保护关闭（最后写入者生效）"
+    source: 验收场景
+    status: passed
+  - item: "恢复失败后手动 /protection enable 成功 → 保护开启且文件重写为 true，下次重启恢复成功"
+    source: 验收场景
+    status: passed

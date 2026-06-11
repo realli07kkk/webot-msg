@@ -121,6 +121,9 @@ func TestLegacyProtectionWarning(t *testing.T) {
 	if !strings.Contains(got, "/protection enable") {
 		t.Fatalf("legacyProtectionWarning() = %q, want /protection enable guidance", got)
 	}
+	if !strings.Contains(got, "once") {
+		t.Fatalf("legacyProtectionWarning() = %q, want one-time enable guidance", got)
+	}
 }
 
 func writeRuntimeConfig(t *testing.T, content string) string {
