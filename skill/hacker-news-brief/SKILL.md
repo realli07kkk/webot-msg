@@ -44,7 +44,7 @@ This skill is designed for CLI-only Linux hosts. Use the current agent's availab
    - If source access failed, include a clear caveat in the summary, for example: `摘要仅基于 Hacker News 标题和页面可见信息。`
    - Do not include HN points or comment counts unless the user explicitly asks for heat metrics.
 
-5. End with a short generation note.
+5. Put a short generation note at the very top of the brief, right after the title line.
    - State that summaries are based on accessible original pages.
    - State that inaccessible sources were marked explicitly.
    - Do not claim every original was read unless that is true.
@@ -55,6 +55,8 @@ Use this structure:
 
 ```text
 ☕ Hacker News 晨间简报 — YYYY 年 M 月 D 日
+
+🤖 本简报由 AI 自动生成。摘要基于可访问的原文内容；无法访问的原文已明确标注为基于 Hacker News 标题和页面可见信息。
 
 📊 今日趋势
 1. {趋势标题} {1-3 句综合分析}
@@ -71,8 +73,6 @@ Use this structure:
 {1-2 句中文摘要；必要时说明访问限制。}
 
 ...
-
-🤖 本简报由 AI 自动生成。摘要基于可访问的原文内容；无法访问的原文已明确标注为基于 Hacker News 标题和页面可见信息。
 ```
 
 ## Style Rules
