@@ -1,0 +1,96 @@
+feature: 2026-06-11-protection-status-footer
+created: 2026-06-11
+
+steps:
+  - action: "名词扩展：Reservation 新增预留快照字段（HasStatus / MessagesBeforeReminder / TimeBeforeWarning），reserve Lua 脚本 send / send_then_reminder 分支额外返回 out_count 与 pttl_ms，Go 侧解析换算（threshold − out_count、pttl − timeWarningBefore，下限 0）"
+    exit_signal: "redis guard 单测覆盖 send / send_then_reminder 返回正确剩余条数与剩余时间；reject / reminder_only / NoopGuard 路径 HasStatus=false"
+    status: done
+  - action: "计算节点：状态行拼装函数落 internal/sender 新文件（前缀 [限流阈值]，条数 + 时间格式化，时间截断到分钟、不足 1 分钟显示 <1m，HasStatus=false 返回空串）"
+    exit_signal: "单测覆盖正常格式、剩余 0 条、<1m 边界、无快照返回空串"
+    status: done
+  - action: "编排挂接：sendProtectedText 在预留成功与 SendMessage 之间按快照追加状态行（text + \"\\n\" + footer），reminder_only / 提醒发送 / release 路径不变"
+    exit_signal: "sender 单测验证保护开启时 fake client 收到 text+状态行、保护关闭收到原文、提醒消息无状态行、发送失败仍正确 release"
+    status: done
+  - action: "测试与验收：补齐第 3 节验收场景覆盖（含并发快照独立、typing 不追加、HTTP 响应结构不变）"
+    exit_signal: "go test ./... 与 go vet ./... 通过"
+    status: done
+
+checks:
+  - item: "Reservation 契约：新增 HasStatus bool、MessagesBeforeReminder int、TimeBeforeWarning time.Duration 三个快照字段，命名与 protection.Status 同义字段对齐"
+    source: 名词契约
+    status: passed
+  - item: "reserve Lua 脚本：send / send_then_reminder 返回 {kind, reason, out_count, pttl_ms}；reject / reminder_only 返回结构不变"
+    source: 名词契约
+    status: passed
+  - item: "状态行拼装函数：输入 Reservation 快照输出单行文本，HasStatus=false 返回空串；文案前缀为 [限流阈值]"
+    source: 名词契约
+    status: passed
+  - item: "拼装步骤插在预留成功与 SendMessage 之间；reminder_only、提醒发送、release 路径编排不变"
+    source: 编排骨架
+    status: passed
+  - item: "拼装是纯计算无新增错误路径；快照缺失静默不追加，不报错不降级拒绝"
+    source: 流程级约束
+    status: passed
+  - item: "快照由预留同一次 Lua 调用返回，sender 中无预留后的二次 Redis 查询"
+    source: 流程级约束
+    status: passed
+  - item: "状态行反映本次发送计入后的剩余值；发送失败 release 后重试重新预留重新拼装，旧快照不复用"
+    source: 流程级约束
+    status: passed
+  - item: "日志不打印拼装后的完整消息正文；保护关闭路径发送内容逐字节不变"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点：protection.Reservation 快照字段与 reserve Lua 返回值扩展（guard.go / redis_guard.go）— 修改"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：internal/sender 普通文本发送前的状态行追加步骤 — 新增"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：状态行文案格式常量与拼装函数（internal/sender 新文件）— 新增"
+    source: 挂载点
+    status: passed
+  - item: "保护提醒发送路径（sendProtectionReminder）不出现状态行拼装调用"
+    source: 范围守护
+    status: passed
+  - item: "internal/sender 中不出现 ProtectionStatus 二次查询调用"
+    source: 范围守护
+    status: passed
+  - item: "runtimeconfig 不新增 TOML key，TOML 解析契约零 diff"
+    source: 范围守护
+    status: passed
+  - item: "HTTP API 请求 / 响应 JSON 不新增字段，请求 text 不被改写后回显"
+    source: 范围守护
+    status: passed
+  - item: "internal/ilink 不感知状态行或保护配置"
+    source: 范围守护
+    status: passed
+  - item: "既有 Lua 脚本 reject / reminder_only 分支的返回结构和判断逻辑不变"
+    source: 范围守护
+    status: passed
+  - item: "保护关闭（默认）发送 hello → iLink 收到内容与 hello 逐字节一致，无状态行"
+    source: 验收场景
+    status: passed
+  - item: "保护开启第 5 条 hello（TTL=10h，warn=30m）→ iLink 收到 hello + 换行 + [限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m；HTTP 响应结构不变"
+    source: 验收场景
+    status: passed
+  - item: "保护开启控制台发送普通文本 → 同样追加状态行"
+    source: 验收场景
+    status: passed
+  - item: "第 9 条触发 send_then_reminder → 状态行显示剩余 0 条；随后提醒消息内容与 reminder_text 一致，不含状态行"
+    source: 验收场景
+    status: passed
+  - item: "冻结状态发送 → HTTP 429 / 控制台锁定错误，不调用 iLink（与现状一致）"
+    source: 验收场景
+    status: passed
+  - item: "iLink 发送失败 → 预留回退；下次发送重新预留并按新快照拼装"
+    source: 验收场景
+    status: passed
+  - item: "TTL − warn 不足 1 分钟但大于 0 → 状态行时间显示 <1m"
+    source: 验收场景
+    status: passed
+  - item: "两条普通文本并发发送 → 各自剩余条数来自各自预留快照，互不相同且与最终计数一致"
+    source: 验收场景
+    status: passed
+  - item: "调用 /bots/{botID}/typing → 行为与现状一致，无任何追加"
+    source: 验收场景
+    status: passed

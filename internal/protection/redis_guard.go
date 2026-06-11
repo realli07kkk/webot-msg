@@ -82,7 +82,7 @@ func NewRedisGuard(client *redis.Client, cfg RedisGuardConfig) *RedisGuard {
 
 func (g *RedisGuard) ReserveNormalSend(ctx context.Context, botID string) (Reservation, error) {
 	threshold := g.messageLimit - g.messageWarningRemaining
-	reservation, err := runReservationScript(ctx, reserveNormalSendScript, g.client, g.keys(botID), threshold, g.timeWarningBefore.Milliseconds())
+	reservation, err := runReservationScript(ctx, reserveNormalSendScript, g.client, g.keys(botID), threshold, g.timeWarningBefore)
 	if err != nil {
 		return Reservation{}, NewRejection("redis", err)
 	}
@@ -207,8 +207,8 @@ func runDecisionScript(ctx context.Context, script *redis.Script, client *redis.
 	}
 }
 
-func runReservationScript(ctx context.Context, script *redis.Script, client *redis.Client, keys []string, args ...interface{}) (Reservation, error) {
-	res, err := script.Run(ctx, client, keys, args...).Result()
+func runReservationScript(ctx context.Context, script *redis.Script, client *redis.Client, keys []string, threshold int, timeWarningBefore time.Duration) (Reservation, error) {
+	res, err := script.Run(ctx, client, keys, threshold, timeWarningBefore.Milliseconds()).Result()
 	if err != nil {
 		return Reservation{}, err
 	}
@@ -220,16 +220,52 @@ func runReservationScript(ctx context.Context, script *redis.Script, client *red
 	reason := fmt.Sprint(values[1])
 	switch kind {
 	case "send":
-		return SendNormal(), nil
+		return reservationWithStatus(SendNormal(), values, threshold, timeWarningBefore)
 	case "reject":
 		return RejectNormal(reason), nil
 	case "send_then_reminder":
-		return SendNormalThenReminder(reason), nil
+		return reservationWithStatus(SendNormalThenReminder(reason), values, threshold, timeWarningBefore)
 	case "reminder_only":
 		return SendReminderOnly(reason), nil
 	default:
 		return Reservation{}, fmt.Errorf("unexpected reservation %q", kind)
 	}
+}
+
+func reservationWithStatus(reservation Reservation, values []interface{}, threshold int, timeWarningBefore time.Duration) (Reservation, error) {
+	if len(values) < 4 {
+		return Reservation{}, fmt.Errorf("unexpected reservation response: %v", values)
+	}
+	outCount, err := parseScriptInt(values[2])
+	if err != nil {
+		return Reservation{}, fmt.Errorf("parse reservation out_count failed: %w", err)
+	}
+	pttlMs, err := parseScriptInt(values[3])
+	if err != nil {
+		return Reservation{}, fmt.Errorf("parse reservation pttl_ms failed: %w", err)
+	}
+
+	messagesBeforeReminder := threshold - outCount
+	if messagesBeforeReminder < 0 {
+		messagesBeforeReminder = 0
+	}
+	timeBeforeWarning := time.Duration(pttlMs)*time.Millisecond - timeWarningBefore
+	if timeBeforeWarning < 0 {
+		timeBeforeWarning = 0
+	}
+
+	reservation.HasStatus = true
+	reservation.MessagesBeforeReminder = messagesBeforeReminder
+	reservation.TimeBeforeWarning = timeBeforeWarning
+	return reservation, nil
+}
+
+func parseScriptInt(value interface{}) (int, error) {
+	n, err := strconv.Atoi(fmt.Sprint(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer %q", fmt.Sprint(value))
+	}
+	return n, nil
 }
 
 func (g *RedisGuard) StateKey(botID string) string {
@@ -266,9 +302,9 @@ count = count + 1
 redis.call("HSET", state, "out_count", count)
 if count >= threshold then
   redis.call("HSET", state, "frozen", "1", "reason", "count", "reminder_pending", "1")
-  return {"send_then_reminder", "count"}
+  return {"send_then_reminder", "count", count, ttl}
 end
-return {"send", ""}
+return {"send", "", count, ttl}
 `)
 
 var releaseNormalSendScript = redis.NewScript(`

@@ -24,7 +24,8 @@ implements:
 - Control console interactive attach：`webot-msg console` 在本地 stdin/stdout 都是 TTY 时启用的客户端行编辑路径；client 本地切 raw mode、复用 `TerminalLineReader` 做回显和 Tab 补全，只在 Enter 后向 Unix socket 写入整行文本加 LF。代码锚点：`cmd/webot-msg/main.go:31`、`internal/control/interactive_client.go:26`。
 - Control console line mode：`webot-msg console` 的非 TTY 路径（管道、脚本输入）和 `nc` / `socat` 直连 control socket 仍保持旧字节流转发语义，不发送协议头、不切 raw mode、不提供按键级 Tab 补全；这样新 client 连接旧 service 时不会把控制字节误当作用户输入。代码锚点：`internal/control/client.go:9`、`internal/control/server.go:57`。
 - Log file policy：标准日志的文件输出路径和大小上限，默认写入 `~/.webot-msg/logs/webot-msg.log`，达到上限后只保留一个 `.1` 备份。代码锚点：`internal/logfile/writer.go:9`。
-- 保护模式：初始默认关闭、由本地控制台 `/protection enable|disable|status` 运行期控制的发送保护能力；开启后，普通文本发送先经过本地保护编排，Redis 判断即将触发微信下发次数或 24h 主动对话限制时会发送提醒并冻结普通发送。保护开关状态会落到本地状态文件，服务启动时可尝试一次自动恢复。代码锚点：`internal/console/console.go:133`、`internal/protection/runtime_guard.go:16`、`internal/sender/protected_text.go:22`。
+- 保护模式：初始默认关闭、由本地控制台 `/protection enable|disable|status` 运行期控制的发送保护能力；开启后，普通文本发送先经过本地保护编排，Redis 判断即将触发微信下发次数或 24h 主动对话限制时会发送提醒并冻结普通发送。保护开启且普通文本预留成功时，发送正文末尾会追加一行保护状态行，展示本次发送计入后的剩余可发条数和距离限制触发的剩余时间。保护开关状态会落到本地状态文件，服务启动时可尝试一次自动恢复。代码锚点：`internal/console/console.go:133`、`internal/protection/runtime_guard.go:16`、`internal/sender/protected_text.go:22`、`internal/sender/status_footer.go:12`。
+- 预留快照：`ReserveNormalSend` 通过 Redis Lua 脚本原子完成普通文本发送预留，并在 `send` / `send_then_reminder` 路径随 `Reservation` 返回 `MessagesBeforeReminder` 和 `TimeBeforeWarning`；保护状态行只消费这个快照，不做预留后的二次 Redis 查询。代码锚点：`internal/protection/guard.go:103`、`internal/protection/redis_guard.go:210`。
 - 保护开关状态文件：`~/.webot-msg/state/protection.json`，由 service 进程在 `/protection enable` 成功后写入开启、在 `/protection disable` 后写入关闭，只保存 `protection_enabled` 布尔值；文件格式由 `internal/protection.StateStore` 管理。代码锚点：`internal/protection/state_store.go:16`、`internal/protection/state_store.go:28`、`internal/protection/state_store.go:44`。
 - Redis 保护状态：保护模式开启时按 bot 存在 Redis 中的状态，包含下发计数、冻结原因、提醒状态和主动对话 TTL；规则全局共用，状态按 botID 隔离。代码锚点：`internal/protection/redis_guard.go:94`、`internal/protection/redis_guard.go:156`。
 - 冻结状态：保护模式已进入提醒 / 拒绝阶段后，HTTP API 和控制台普通文本发送都会被拒绝，直到下一次微信 App 主动消息触发 `RecordActiveConversation` 重置。代码锚点：`internal/api/server.go:121`、`internal/app/app.go:408`。
@@ -47,9 +48,9 @@ implements:
 
 `internal/app` 是编排层，持有配置仓库、iLink 客户端、control socket path、运行期保护 guard、保护开关状态 store 和正在运行的监听 / 保护检查协程集合。它负责启动时加载配置、读取保护开关状态并在记录为开启时尝试一次恢复、交互终端下必要时扫码登录、补齐 API token、启动 control console、启动监听、启动 HTTP API，再进入控制台循环；非交互 stdin 下不会自动扫码阻塞 service。控制台 `/protection enable` 会按 Runtime config 中的 Redis 配置创建 Redis guard、为已登录 bot 启动时间窗口检查器并写入开启状态，`/protection disable` 会切回 no-op guard、取消检查器并写入关闭状态，`/protection status` 查询当前 active bot 的剩余额度。代码锚点：`internal/app/app.go:34`、`internal/app/app.go:97`、`internal/app/app.go:216`、`internal/app/app.go:234`。
 
-`internal/sender` 是普通文本发送编排层。它把“Redis 保护预留、iLink 普通文本发送、发送失败释放预留、必要时发送保护提醒并记录提醒”收敛成一个入口，供 HTTP API 和控制台共同调用；保护提醒不递归走普通文本 guard。代码锚点：`internal/sender/protected_text.go:22`、`internal/sender/protected_text.go:66`。
+`internal/sender` 是普通文本发送编排层。它把“Redis 保护预留、按预留快照追加保护状态行、iLink 普通文本发送、发送失败释放预留、必要时发送保护提醒并记录提醒”收敛成一个入口，供 HTTP API 和控制台共同调用；保护关闭或快照缺失时正文保持原样，保护提醒不递归走普通文本 guard，也不追加状态行。代码锚点：`internal/sender/protected_text.go:22`、`internal/sender/protected_text.go:47`、`internal/sender/protected_text.go:80`、`internal/sender/status_footer.go:12`。
 
-`internal/protection` 是保护状态计算层。`RuntimeGuard` 是进程内运行期开关，默认让新操作走 `NoopGuard` 保持原行为，启用后让新操作绑定当前 Redis guard generation；运行期 disable 只阻止新保护操作，已开始的保护发送事务继续使用同一 generation 完成 release/record 后再关闭 Redis client。`StateStore` 管理本地保护开关状态文件，文件不存在视为关闭，非法 JSON 返回错误由 app 告警后继续，保存使用临时文件和 rename 原子替换。Redis 实现使用 `github.com/redis/go-redis/v9`，通过 Lua 脚本原子处理普通发送预留、预留释放、提醒记录、主动对话重置和 24h TTL 检查，并提供只读状态查询给控制台 status。代码锚点：`internal/protection/runtime_guard.go:10`、`internal/protection/state_store.go:20`、`internal/protection/redis_guard.go:29`、`internal/protection/redis_guard.go:64`。
+`internal/protection` 是保护状态计算层。`RuntimeGuard` 是进程内运行期开关，默认让新操作走 `NoopGuard` 保持原行为，启用后让新操作绑定当前 Redis guard generation；运行期 disable 只阻止新保护操作，已开始的保护发送事务继续使用同一 generation 完成 release/record 后再关闭 Redis client。`StateStore` 管理本地保护开关状态文件，文件不存在视为关闭，非法 JSON 返回错误由 app 告警后继续，保存使用临时文件和 rename 原子替换。Redis 实现使用 `github.com/redis/go-redis/v9`，通过 Lua 脚本原子处理普通发送预留、预留释放、提醒记录、主动对话重置和 24h TTL 检查，并提供只读状态查询给控制台 status；普通发送预留成功时，同一次 Lua 调用还会返回本次发送计入后的剩余额度和 active TTL 快照给 sender 拼装状态行。代码锚点：`internal/protection/runtime_guard.go:10`、`internal/protection/state_store.go:20`、`internal/protection/redis_guard.go:29`、`internal/protection/redis_guard.go:64`、`internal/protection/redis_guard.go:210`。
 
 `internal/api` 暴露 `/bots/{botID}/messages` 和 `/bots/{botID}/typing` 两类动作。请求先从 `Authorization: Bearer` 或参数里取 token，再按 bot id 查本地配置并校验 `APIToken`。普通文本发送通过 `internal/sender` 进入保护编排；typing 仍直接调用 iLink 客户端，不计入保护计数，冻结状态下也不阻止。代码锚点：`internal/api/server.go:22`、`internal/api/server.go:109`、`internal/api/server.go:129`。
 
@@ -89,6 +90,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - 普通文本发送前原子预留额度：保护开启时必须先通过 Redis Lua 脚本预留普通发送额度，避免并发请求打穿微信下发限制；iLink 普通文本发送失败时释放预留。
 - 保护提醒也算下发消息：提醒真实调用 iLink `sendmessage`，发送成功后必须写入 `out_count`，否则系统计数会比微信侧少。
 - 受保护发送事务绑定同一 guard generation：`ReserveNormalSend -> iLink SendMessage -> ReleaseNormalSend/RecordReminderSend` 不能被运行期 disable 切成不同 delegate；disable 只能影响新事务。
+- 保护状态行只在保护开启且普通文本预留成功时追加到真实发送正文；HTTP API 请求 / 响应 JSON 契约保持不变，`/bots/{botID}/typing` 和保护提醒消息不追加状态行。状态行数据必须来自同一次 Redis 预留 Lua 返回的快照，禁止在 sender 中用 `ProtectionStatus` 做预留后的二次查询。代码锚点：`internal/sender/protected_text.go:47`、`internal/sender/status_footer.go:12`、`internal/protection/redis_guard.go:210`。
 
 ## 5. 代码锚点
 

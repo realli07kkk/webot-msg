@@ -2,11 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/protection"
@@ -35,6 +37,43 @@ func TestHandleSendMessageSendsReminderAfterNormalSendDecision(t *testing.T) {
 	}
 }
 
+func TestHandleSendMessageAppendsStatusFooterWithoutChangingResponse(t *testing.T) {
+	store := newAPIStore(t)
+	client := &fakeMessageClient{}
+	guard := &fakeProtectionGuard{
+		reservation: protection.Reservation{
+			Kind:                   protection.ReservationSendNormal,
+			HasStatus:              true,
+			MessagesBeforeReminder: 4,
+			TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
+		},
+	}
+	server := NewServerWithClient(store, client, guard, "reminder")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
+	server.handleBotAction(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rr.Code, rr.Body.String())
+	}
+	wantMessage := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m"
+	if got := client.messages; len(got) != 1 || got[0] != wantMessage {
+		t.Fatalf("messages = %#v, want [%q]", got, wantMessage)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response JSON decode error = %v", err)
+	}
+	if _, ok := body["text"]; ok {
+		t.Fatalf("response body = %#v, must not include text", body)
+	}
+	if _, ok := body["message_text"]; ok {
+		t.Fatalf("response body = %#v, must not include message_text", body)
+	}
+}
+
 func TestHandleSendMessageRejectsFrozenBeforeSendingUserText(t *testing.T) {
 	store := newAPIStore(t)
 	client := &fakeMessageClient{}
@@ -58,6 +97,37 @@ func TestHandleSendMessageRejectsFrozenBeforeSendingUserText(t *testing.T) {
 	}
 }
 
+func TestHandleTypingDoesNotReserveOrAppendStatusFooter(t *testing.T) {
+	store := newAPIStore(t)
+	client := &fakeMessageClient{}
+	guard := &fakeProtectionGuard{
+		reservation: protection.Reservation{
+			Kind:                   protection.ReservationSendNormal,
+			HasStatus:              true,
+			MessagesBeforeReminder: 4,
+			TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
+		},
+	}
+	server := NewServerWithClient(store, client, guard, "reminder")
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/typing?token=api-token&status=1", nil)
+	server.handleBotAction(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rr.Code, rr.Body.String())
+	}
+	if guard.reserveCalls != 0 {
+		t.Fatalf("ReserveNormalSend calls = %d, want 0", guard.reserveCalls)
+	}
+	if len(client.messages) != 0 {
+		t.Fatalf("messages = %#v, want none", client.messages)
+	}
+	if got := client.typingStatuses; len(got) != 1 || got[0] != 1 {
+		t.Fatalf("typing statuses = %#v, want [1]", got)
+	}
+}
+
 func newAPIStore(t *testing.T) *config.Store {
 	t.Helper()
 	store := config.NewStore(filepath.Join(t.TempDir(), "auth.json"))
@@ -76,7 +146,8 @@ func newAPIStore(t *testing.T) *config.Store {
 }
 
 type fakeMessageClient struct {
-	messages []string
+	messages       []string
+	typingStatuses []int
 }
 
 func (f *fakeMessageClient) SendMessage(_ config.UserConfig, _ string, text string, _ string) error {
@@ -84,18 +155,21 @@ func (f *fakeMessageClient) SendMessage(_ config.UserConfig, _ string, text stri
 	return nil
 }
 
-func (f *fakeMessageClient) SendTyping(config.UserConfig, int) error {
+func (f *fakeMessageClient) SendTyping(_ config.UserConfig, status int) error {
+	f.typingStatuses = append(f.typingStatuses, status)
 	return nil
 }
 
 type fakeProtectionGuard struct {
 	reservation         protection.Reservation
+	reserveCalls        int
 	recordReminderCalls int
 	releaseCalls        int
 }
 
 func (f *fakeProtectionGuard) ReserveNormalSend(context.Context, string) (protection.Reservation, error) {
-	if f.reservation.Kind != protection.ReservationSendNormal {
+	f.reserveCalls++
+	if f.reservation.Kind != protection.ReservationSendNormal || f.reservation.Reason != "" || f.reservation.HasStatus {
 		return f.reservation, nil
 	}
 	return protection.SendNormal(), nil

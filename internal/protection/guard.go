@@ -103,6 +103,10 @@ const (
 type Reservation struct {
 	Kind   ReservationKind
 	Reason string
+
+	HasStatus              bool
+	MessagesBeforeReminder int
+	TimeBeforeWarning      time.Duration
 }
 
 func SendNormal() Reservation {

@@ -45,7 +45,11 @@ func sendProtectedText(ctx context.Context, client MessageClient, guard protecti
 		}
 		return result, protection.NewRejection(reservation.Reason, nil)
 	case protection.ReservationSendNormal, protection.ReservationSendNormalThenReminder:
-		if err := client.SendMessage(user, user.IlinkUserID, text, user.ContextToken); err != nil {
+		messageText := text
+		if footer := protectionStatusFooter(reservation); footer != "" {
+			messageText += "\n" + footer
+		}
+		if err := client.SendMessage(user, user.IlinkUserID, messageText, user.ContextToken); err != nil {
 			if releaseErr := guard.ReleaseNormalSend(ctx, user.BotID); releaseErr != nil {
 				return result, fmt.Errorf("send failed: %w; release protection reservation failed: %v", err, releaseErr)
 			}

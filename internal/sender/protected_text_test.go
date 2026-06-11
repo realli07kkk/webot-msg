@@ -35,6 +35,85 @@ func TestSendProtectedTextFailsClosedWhenReminderRecordFails(t *testing.T) {
 	}
 }
 
+func TestSendProtectedTextAppendsStatusFooterWhenSnapshotExists(t *testing.T) {
+	client := &fakeMessageClient{}
+	guard := &fakeGuard{
+		reservation: protection.Reservation{
+			Kind:                   protection.ReservationSendNormal,
+			HasStatus:              true,
+			MessagesBeforeReminder: 4,
+			TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
+		},
+	}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	result, err := SendProtectedText(context.Background(), client, guard, user, "hello", "reminder")
+	if err != nil {
+		t.Fatalf("SendProtectedText() error = %v", err)
+	}
+	if !result.NormalSent || result.ReminderSent {
+		t.Fatalf("SendProtectedText() = %#v, want normal only", result)
+	}
+	want := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m"
+	if got := client.messages; len(got) != 1 || got[0] != want {
+		t.Fatalf("messages = %#v, want [%q]", got, want)
+	}
+}
+
+func TestSendProtectedTextLeavesTextUnchangedWithoutStatusSnapshot(t *testing.T) {
+	client := &fakeMessageClient{}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	result, err := SendProtectedText(context.Background(), client, protection.NoopGuard{}, user, "hello", "reminder")
+	if err != nil {
+		t.Fatalf("SendProtectedText() error = %v", err)
+	}
+	if !result.NormalSent || result.ReminderSent {
+		t.Fatalf("SendProtectedText() = %#v, want normal only", result)
+	}
+	if got := client.messages; len(got) != 1 || got[0] != "hello" {
+		t.Fatalf("messages = %#v, want [hello]", got)
+	}
+}
+
+func TestSendProtectedTextDoesNotAppendStatusFooterToReminder(t *testing.T) {
+	client := &fakeMessageClient{}
+	guard := &fakeGuard{
+		reservation: protection.Reservation{
+			Kind:                   protection.ReservationSendNormalThenReminder,
+			Reason:                 protection.ReasonCount,
+			HasStatus:              true,
+			MessagesBeforeReminder: 0,
+			TimeBeforeWarning:      9*time.Hour + 25*time.Minute,
+		},
+	}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	result, err := SendProtectedText(context.Background(), client, guard, user, "hello", "reminder")
+	if err != nil {
+		t.Fatalf("SendProtectedText() error = %v", err)
+	}
+	if !result.NormalSent || !result.ReminderSent {
+		t.Fatalf("SendProtectedText() = %#v, want normal and reminder sent", result)
+	}
+	wantNormal := "hello\n[限流阈值] 剩余可发 0 条 | 距离限制还有 9h25m"
+	if got := client.messages; len(got) != 2 || got[0] != wantNormal || got[1] != "reminder" {
+		t.Fatalf("messages = %#v, want [%q reminder]", got, wantNormal)
+	}
+}
+
 func TestSendProtectedTextReleaseUsesReservedGenerationAfterDisable(t *testing.T) {
 	guard, redisServer := newRuntimeGuardWithRedis(t)
 	seedProtectionCount(t, guard, "bot-1", 8)
@@ -92,8 +171,9 @@ func TestSendProtectedTextReminderRecordUsesReservedGenerationAfterDisable(t *te
 	if !result.NormalSent || !result.ReminderSent {
 		t.Fatalf("SendProtectedText() = %#v, want normal and reminder sent", result)
 	}
-	if got := client.messages; len(got) != 2 || got[0] != "hello" || got[1] != "reminder" {
-		t.Fatalf("messages = %#v, want [hello reminder]", got)
+	wantNormal := "hello\n[限流阈值] 剩余可发 0 条 | 距离限制还有 23h30m"
+	if got := client.messages; len(got) != 2 || got[0] != wantNormal || got[1] != "reminder" {
+		t.Fatalf("messages = %#v, want [%q reminder]", got, wantNormal)
 	}
 
 	stateKey := "webot-msg:protect:{bot-1}:state"
@@ -168,7 +248,7 @@ type fakeGuard struct {
 }
 
 func (f *fakeGuard) ReserveNormalSend(context.Context, string) (protection.Reservation, error) {
-	if f.reservation.Kind != protection.ReservationSendNormal {
+	if f.reservation.Kind != protection.ReservationSendNormal || f.reservation.Reason != "" || f.reservation.HasStatus {
 		return f.reservation, nil
 	}
 	return protection.SendNormal(), nil

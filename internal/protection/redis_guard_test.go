@@ -96,6 +96,51 @@ func TestRedisGuardReserveNormalSendTriggersReminderAndCountsReminder(t *testing
 	}
 }
 
+func TestRedisGuardReserveNormalSendReturnsStatusSnapshot(t *testing.T) {
+	guard, _, closeClient := newTestRedisGuard(t)
+	defer closeClient()
+
+	if err := guard.RecordActiveConversation(context.Background(), "bot-1"); err != nil {
+		t.Fatalf("RecordActiveConversation() error = %v", err)
+	}
+
+	reservation, err := guard.ReserveNormalSend(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("ReserveNormalSend(1) error = %v", err)
+	}
+	if reservation.Kind != ReservationSendNormal {
+		t.Fatalf("ReserveNormalSend(1) reservation = %#v, want send normal", reservation)
+	}
+	if !reservation.HasStatus {
+		t.Fatal("Reservation.HasStatus = false, want true")
+	}
+	if reservation.MessagesBeforeReminder != 8 {
+		t.Fatalf("Reservation.MessagesBeforeReminder = %d, want 8", reservation.MessagesBeforeReminder)
+	}
+	if reservation.TimeBeforeWarning != 23*time.Hour+30*time.Minute {
+		t.Fatalf("Reservation.TimeBeforeWarning = %s, want 23h30m", reservation.TimeBeforeWarning)
+	}
+
+	for i := 0; i < 7; i++ {
+		if _, err := guard.ReserveNormalSend(context.Background(), "bot-1"); err != nil {
+			t.Fatalf("ReserveNormalSend(%d) error = %v", i+2, err)
+		}
+	}
+	reservation, err = guard.ReserveNormalSend(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("ReserveNormalSend(9) error = %v", err)
+	}
+	if reservation.Kind != ReservationSendNormalThenReminder || reservation.Reason != ReasonCount {
+		t.Fatalf("ReserveNormalSend(9) reservation = %#v, want send normal then reminder count", reservation)
+	}
+	if !reservation.HasStatus {
+		t.Fatal("Reservation.HasStatus = false, want true")
+	}
+	if reservation.MessagesBeforeReminder != 0 {
+		t.Fatalf("Reservation.MessagesBeforeReminder = %d, want 0", reservation.MessagesBeforeReminder)
+	}
+}
+
 func TestRedisGuardProtectionStatus(t *testing.T) {
 	guard, redisServer, closeClient := newTestRedisGuard(t)
 	defer closeClient()
@@ -186,6 +231,9 @@ func TestRedisGuardReserveNormalSendRejectsFrozenAndMissingActive(t *testing.T) 
 	if reservation.Kind != ReservationReject || reservation.Reason != ReasonTime {
 		t.Fatalf("ReserveNormalSend() reservation = %#v, want reject time", reservation)
 	}
+	if reservation.HasStatus {
+		t.Fatal("Reservation.HasStatus = true, want false")
+	}
 
 	reservation, err = guard.ReserveNormalSend(context.Background(), "bot-1")
 	if err != nil {
@@ -193,6 +241,9 @@ func TestRedisGuardReserveNormalSendRejectsFrozenAndMissingActive(t *testing.T) 
 	}
 	if reservation.Kind != ReservationReject || reservation.Reason != ReasonTime {
 		t.Fatalf("ReserveNormalSend() frozen reservation = %#v, want reject time", reservation)
+	}
+	if reservation.HasStatus {
+		t.Fatal("Reservation.HasStatus frozen = true, want false")
 	}
 }
 
@@ -245,6 +296,64 @@ func TestRedisGuardReserveNormalSendConcurrentThreshold(t *testing.T) {
 	stateKey := guard.StateKey("bot-1")
 	if got := redisServer.HGet(stateKey, "out_count"); got != "9" {
 		t.Fatalf("out_count = %q, want 9", got)
+	}
+}
+
+func TestRedisGuardReserveNormalSendConcurrentStatusSnapshots(t *testing.T) {
+	guard, redisServer, closeClient := newTestRedisGuard(t)
+	defer closeClient()
+
+	if err := guard.RecordActiveConversation(context.Background(), "bot-1"); err != nil {
+		t.Fatalf("RecordActiveConversation() error = %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := guard.ReserveNormalSend(context.Background(), "bot-1"); err != nil {
+			t.Fatalf("ReserveNormalSend(seed %d) error = %v", i+1, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	results := make(chan Reservation, 2)
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reservation, err := guard.ReserveNormalSend(context.Background(), "bot-1")
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- reservation
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("ReserveNormalSend() concurrent error = %v", err)
+	}
+
+	remaining := map[int]int{}
+	for reservation := range results {
+		if reservation.Kind != ReservationSendNormal {
+			t.Fatalf("Reservation.Kind = %d, want send normal", reservation.Kind)
+		}
+		if !reservation.HasStatus {
+			t.Fatal("Reservation.HasStatus = false, want true")
+		}
+		remaining[reservation.MessagesBeforeReminder]++
+	}
+	if remaining[5] != 1 || remaining[4] != 1 {
+		t.Fatalf("MessagesBeforeReminder snapshots = %#v, want one 5 and one 4", remaining)
+	}
+	stateKey := guard.StateKey("bot-1")
+	if got := redisServer.HGet(stateKey, "out_count"); got != "5" {
+		t.Fatalf("out_count = %q, want 5", got)
 	}
 }
 
@@ -302,6 +411,9 @@ func TestRedisGuardReserveNormalSendTimeWarningSendsReminderOnly(t *testing.T) {
 	}
 	if reservation.Kind != ReservationSendReminderOnly || reservation.Reason != ReasonTime {
 		t.Fatalf("ReserveNormalSend() reservation = %#v, want reminder only time", reservation)
+	}
+	if reservation.HasStatus {
+		t.Fatal("Reservation.HasStatus = true, want false")
 	}
 	stateKey := guard.StateKey("bot-1")
 	if got := redisServer.HGet(stateKey, "out_count"); got != "0" {

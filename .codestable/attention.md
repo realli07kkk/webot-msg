@@ -15,6 +15,7 @@
 ### 命令与脚本陷阱
 
 - 后续改启动参数、默认路径、构建方式或 Linux 运行方式时，要同步检查是否需要更新 `scripts/linux-service.sh` 和 `docs/user/linux-systemd-deploy.md`。
+- `.codestable/tools/validate-yaml.py` 必须用 `python3 .codestable/tools/validate-yaml.py --file <path>` 调用；脚本本身没有执行权限，不能直接运行。
 
 ### 路径与目录约定
 

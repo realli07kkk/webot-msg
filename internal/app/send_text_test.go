@@ -52,6 +52,43 @@ func TestSendTextSendsReminderAfterNormalSendDecision(t *testing.T) {
 	}
 }
 
+func TestSendTextAppendsStatusFooter(t *testing.T) {
+	store := config.NewStore(filepath.Join(t.TempDir(), "auth.json"))
+	if err := store.EnsureDir(); err != nil {
+		t.Fatalf("EnsureDir() error = %v", err)
+	}
+	if err := store.AddBot(config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}); err != nil {
+		t.Fatalf("AddBot() error = %v", err)
+	}
+
+	client := &fakeClient{}
+	a := &App{
+		store:  store,
+		client: client,
+		guard: &fakeGuard{
+			reservation: protection.Reservation{
+				Kind:                   protection.ReservationSendNormal,
+				HasStatus:              true,
+				MessagesBeforeReminder: 4,
+				TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
+			},
+		},
+		reminderText: "reminder",
+	}
+
+	if err := a.SendText("bot-1", "hello"); err != nil {
+		t.Fatalf("SendText() error = %v", err)
+	}
+	want := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m"
+	if got := client.messages; len(got) != 1 || got[0] != want {
+		t.Fatalf("sent messages = %#v, want [%q]", got, want)
+	}
+}
+
 func TestSendTextRejectsFrozenBeforeSendingUserText(t *testing.T) {
 	store := config.NewStore(filepath.Join(t.TempDir(), "auth.json"))
 	if err := store.EnsureDir(); err != nil {
@@ -235,7 +272,7 @@ func (f *fakeGuard) ReserveNormalSend(context.Context, string) (protection.Reser
 	if f.reserveErr != nil {
 		return protection.Reservation{}, f.reserveErr
 	}
-	if f.reservation.Kind != protection.ReservationSendNormal {
+	if f.reservation.Kind != protection.ReservationSendNormal || f.reservation.Reason != "" || f.reservation.HasStatus {
 		return f.reservation, nil
 	}
 	return protection.SendNormal(), nil
