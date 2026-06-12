@@ -74,6 +74,13 @@ func main() {
 		TimeCheckInterval:   resolved.Protection.TimeCheckIntervalDuration,
 	})
 	if err := application.Run(resolved.API.Port); err != nil {
+		if errors.Is(err, control.ErrSocketAlreadyInUse) {
+			if attached, attachErr := attachExistingConsole(resolved.Control.SocketPath); attachErr != nil {
+				err = fmt.Errorf("%w; attach existing console failed: %v", err, attachErr)
+			} else if attached {
+				return
+			}
+		}
 		fatalStartupError(err, logWriter != nil)
 	}
 }

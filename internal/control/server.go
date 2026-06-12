@@ -20,6 +20,8 @@ type Server struct {
 	listener   net.Listener
 }
 
+var ErrSocketAlreadyInUse = errors.New("control socket already in use")
+
 func NewServer(socketPath string, controller console.Controller) *Server {
 	return &Server{
 		socketPath: socketPath,
@@ -98,7 +100,7 @@ func listenUnixSocket(socketPath string) (net.Listener, error) {
 			return nil, fmt.Errorf("control socket path exists and is not a unix socket: %s", socketPath)
 		}
 		if isUnixSocketAlive(socketPath) {
-			return nil, fmt.Errorf("control socket already in use: %s", socketPath)
+			return nil, fmt.Errorf("%w: %s", ErrSocketAlreadyInUse, socketPath)
 		}
 		if err := os.Remove(socketPath); err != nil {
 			return nil, fmt.Errorf("remove stale control socket: %w", err)

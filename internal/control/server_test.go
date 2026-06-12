@@ -2,6 +2,7 @@ package control
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -34,6 +35,29 @@ func TestListenUnixSocketRemovesStaleSocket(t *testing.T) {
 	}
 	if got := info.Mode().Perm(); got != 0600 {
 		t.Fatalf("socket perm = %o, want 600", got)
+	}
+}
+
+func TestListenUnixSocketRejectsLiveSocketWithSentinel(t *testing.T) {
+	dir := shortTempDir(t)
+	socketPath := filepath.Join(dir, "webot-msg.sock")
+
+	existingListener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("create live socket: %v", err)
+	}
+	defer existingListener.Close()
+
+	listener, err := listenUnixSocket(socketPath)
+	if err == nil {
+		listener.Close()
+		t.Fatal("listenUnixSocket() error = nil, want error")
+	}
+	if !errors.Is(err, ErrSocketAlreadyInUse) {
+		t.Fatalf("listenUnixSocket() error = %v, want ErrSocketAlreadyInUse", err)
+	}
+	if !strings.Contains(err.Error(), "control socket already in use") {
+		t.Fatalf("listenUnixSocket() error = %q, want already in use message", err.Error())
 	}
 }
 
