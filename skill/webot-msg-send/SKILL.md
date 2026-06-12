@@ -31,12 +31,10 @@ Never show `bot_token`, `api_token`, or `context_token` in user-visible output.
 ## Workflow
 
 1. Locate the running service config.
-   - If a running process uses `-port N`, use `N`; it overrides TOML.
-   - If a running process uses `-c path`, read that TOML.
-   - Otherwise read `~/.webot-msg/config/webot-msg.toml` when it exists.
+   - Read `~/.webot-msg/config/webot-msg.toml` when it exists.
    - If no TOML exists, use defaults.
-   - On Linux, inspect the process with `pgrep -af 'webot-msg'` or `ps -ef | grep '[w]ebot-msg'`.
-   - For systemd deployments, inspect `systemctl cat webot-msg` and `systemctl show webot-msg -p User -p FragmentPath` when permitted.
+   - On Linux, inspect the process with `pgrep -af 'webot-msg'` or `ps -ef | grep '[w]ebot-msg'` only to confirm the service user when needed.
+   - For systemd deployments, inspect `systemctl show webot-msg -p User -p FragmentPath` when permitted if the service user may differ from the agent user.
 
 2. Resolve the API address.
    - Read `[api].port` from TOML.

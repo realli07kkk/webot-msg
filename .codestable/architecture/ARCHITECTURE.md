@@ -4,7 +4,7 @@ slug: architecture-overview
 scope: webot-msg 当前 CLI/API 服务整体结构
 summary: CLI 启动一个本地应用，由 app 编排配置、iLink 客户端、HTTP API、带 Tab 补全的控制台、每个 bot 的消息监听、可自动恢复的 Redis 发送保护和 Linux systemd 部署脚本。
 status: current
-last_reviewed: 2026-06-11
+last_reviewed: 2026-06-12
 tags: [go, cli, api, bot, config, logging, deploy, systemd, console, autocomplete, protection, redis, state]
 depends_on: []
 implements:
@@ -19,10 +19,11 @@ implements:
 - Active bot：单个控制台会话当前选中的发送身份，保存在 `internal/console` 的 session-local 变量里；多个 control console 连接互不共享该状态。代码锚点：`internal/console/console.go:46`。
 - 消息上下文：发送回复需要的 `IlinkUserID` 与 `ContextToken`，由监听更新时写回本地配置。代码锚点：`internal/app/app.go:379`。
 - Runtime config：启动时读取的 TOML 配置，控制 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件策略和 Redis 连接，不保存 bot 凭据、消息上下文或保护开关值；保护开关状态文件路径由 runtimeconfig 内置默认值解析，不暴露为 TOML key。代码锚点：`internal/runtimeconfig/config.go:35`。
-- Control console：通过 Unix socket 连接运行中 service 的交互控制台，复用 `internal/console` 命令语义；`/exit` 和 `/quit` 只关闭当前控制台连接，不停止 service。代码锚点：`internal/control/server.go:41`、`internal/control/client.go:9`。
+- 前台 console：无参运行 `webot-msg` 且 stdin/stdout 是 TTY 时，service 启动完整监听、HTTP API、保护和 control socket 后进入的本地交互控制台；按 Ctrl+C 会保存配置并退出进程。代码锚点：`cmd/webot-msg/main.go:15`、`internal/app/app.go:150`。
+- Control console：service 通过 Unix socket 暴露的交互控制台通道，复用 `internal/console` 命令语义；可用 `nc -U` / `socat` 等本地 socket 客户端连接，`/exit` 和 `/quit` 只关闭当前连接，不停止 service。代码锚点：`internal/control/server.go:41`。
 - Console 命令补全：交互式 TTY 控制台按 Tab 时补齐 `internal/console` 静态命令表里的顶层命令和固定子命令；补全不执行命令、不读取凭据、不改变 active bot。非 TTY 输入走 line mode fallback。代码锚点：`internal/console/completion.go:8`、`internal/console/terminal_reader.go:20`。
-- Control console interactive attach：`webot-msg console` 在本地 stdin/stdout 都是 TTY 时启用的客户端行编辑路径；client 本地切 raw mode、复用 `TerminalLineReader` 做回显和 Tab 补全，只在 Enter 后向 Unix socket 写入整行文本加 LF。代码锚点：`cmd/webot-msg/main.go:31`、`internal/control/interactive_client.go:26`。
-- Control console line mode：`webot-msg console` 的非 TTY 路径（管道、脚本输入）和 `nc` / `socat` 直连 control socket 仍保持旧字节流转发语义，不发送协议头、不切 raw mode、不提供按键级 Tab 补全；这样新 client 连接旧 service 时不会把控制字节误当作用户输入。代码锚点：`internal/control/client.go:9`、`internal/control/server.go:57`。
+- Control client 休眠库：`internal/control` 仍保留 `Attach` / `AttachInteractive` / `outputSplitter` 等 client 端 helper 及测试，但当前可执行入口不再挂载第一方 attach 命令；运行中服务的实际控制入口是 socket server。代码锚点：`internal/control/client.go:9`、`internal/control/interactive_client.go:26`、`internal/control/output_splitter.go:15`。
+- Control console line mode：`nc -U` / `socat` 等第三方客户端直连 control socket 时保持字节流行模式，不发送协议头、不切 raw mode、不提供按键级 Tab 补全。代码锚点：`internal/control/server.go:57`。
 - Log file policy：标准日志的文件输出路径和大小上限，默认写入 `~/.webot-msg/logs/webot-msg.log`，达到上限后只保留一个 `.1` 备份。代码锚点：`internal/logfile/writer.go:9`。
 - 保护模式：初始默认关闭、由本地控制台 `/protection enable|disable|status` 运行期控制的发送保护能力；开启后，普通文本发送先经过本地保护编排，Redis 判断即将触发微信下发次数或 24h 主动对话限制时会发送提醒并冻结普通发送。保护开启且普通文本预留成功时，发送正文末尾会追加一行保护状态行，展示本次发送计入后的剩余可发条数和距离限制触发的剩余时间。保护开关状态会落到本地状态文件，服务启动时可尝试一次自动恢复。代码锚点：`internal/console/console.go:133`、`internal/protection/runtime_guard.go:16`、`internal/sender/protected_text.go:22`、`internal/sender/status_footer.go:12`。
 - 预留快照：`ReserveNormalSend` 通过 Redis Lua 脚本原子完成普通文本发送预留，并在 `send` / `send_then_reminder` 路径随 `Reservation` 返回 `MessagesBeforeReminder` 和 `TimeBeforeWarning`；保护状态行只消费这个快照，不做预留后的二次 Redis 查询。代码锚点：`internal/protection/guard.go:103`、`internal/protection/redis_guard.go:210`。
@@ -38,7 +39,7 @@ implements:
 
 ## 2. 结构与交互
 
-`cmd/webot-msg/main.go` 是唯一可执行入口，支持默认 `serve` 和 `console` 两种命令。`serve` 默认读取 `~/.webot-msg/config/webot-msg.toml`，默认文件缺失时回退内置默认值，并解析兼容 `-c` 与 `-port` 覆盖项，加载并校验 Runtime config，准备本地存储目录和文件日志，然后用解析后的 auth store path、iLink BaseURL 与 control socket path 创建应用；`console` 读取同一份 Runtime config 并连接运行中 service 的本地 Unix socket。代码锚点：`cmd/webot-msg/main.go:21`、`cmd/webot-msg/main.go:135`。
+`cmd/webot-msg/main.go` 是唯一可执行入口，只接受无参运行。带任何参数都会向 stderr 打印一行错误并以退出码 2 结束；无参时固定读取 `~/.webot-msg/config/webot-msg.toml`，默认文件缺失时回退内置默认值，加载并校验 Runtime config，准备本地存储目录和文件日志，然后用解析后的 auth store path、iLink BaseURL 与 control socket path 创建应用。API 端口只来自 TOML 或内置默认值，不再有 CLI 覆盖入口。代码锚点：`cmd/webot-msg/main.go:15`、`cmd/webot-msg/main.go:91`。
 
 `internal/runtimeconfig` 是启动配置计算层。它先给出内置默认值，再按可选 TOML 覆盖，最后做 `~` 展开、端口范围、BaseURL scheme、control socket path、日志大小和未知 key 校验。默认存储根目录是 `~/.webot-msg/`，默认 auth store、日志路径、保护开关状态文件和控制台 socket 分别落在 `config/`、`logs/`、`state/` 和根目录；TOML 只保留 Redis 连接配置，不保存保护开关值，也不暴露状态文件路径 key。旧 `[protection]` section 只作兼容解析，不再驱动运行行为。代码锚点：`internal/runtimeconfig/config.go:17`、`internal/runtimeconfig/config.go:35`、`internal/runtimeconfig/config.go:213`。
 
@@ -56,7 +57,7 @@ implements:
 
 `internal/console` 只依赖 `Controller` 接口，负责 `/login`、`/bots`、`/bot <num>`、`/del <num>`、`/protection enable|disable|status`、`/exit`、`/quit` 和普通文本发送。控制台的命令 help 与 Tab 补全候选来自同一份静态 `CommandSpec`；TTY 下使用 `TerminalLineReader` 和 `golang.org/x/term.Terminal.AutoCompleteCallback` 补全已声明命令/固定子命令，非 TTY 和测试通过 `BufferedLineReader` 保持按行读取。active bot 是会话本地状态，不写回 `app` 全局。代码锚点：`internal/console/console.go:20`、`internal/console/commands.go:3`、`internal/console/terminal_reader.go:19`。
 
-`internal/control` 提供运行中 service 的本地控制台通道。server 在配置的 Unix socket path 监听并清理 stale socket，把每个连接交给 `console.RunWithIO`；server 侧不感知 client 是否 TTY。`webot-msg console` 在 stdin/stdout 都是 TTY 时走 interactive attach：先连接 socket，连接成功后本地切 raw mode，读协程用 output splitter 把 server 字节流拆成整行输出和 prompt 尾部并串行写入 `TerminalLineReader`，主循环用同一份静态命令表做 Tab 补全，只有 Enter 才把整行加 LF 写入 socket。非 TTY 时仍调用 `Attach` 做双向 `io.Copy`，不发送协议头。代码锚点：`internal/control/server.go:17`、`internal/control/server.go:57`、`internal/control/interactive_client.go:41`、`internal/control/output_splitter.go:15`、`internal/control/client.go:9`。
+`internal/control` 提供运行中 service 的本地控制台通道。server 在配置的 Unix socket path 监听并清理 stale socket，把每个连接交给 `console.RunWithIO`；server 侧不感知 client 是否 TTY。当前可执行入口不再挂载第一方 attach 命令，systemd 场景使用 `nc -U` / `socat` 等本地 socket 客户端直接连接 control socket，按普通 line mode 输入命令，不发送协议头、不提供按键级 Tab 补全。`Attach`、`AttachInteractive` 和 output splitter 仍作为休眠库保留，以便未来恢复 attach 能力时复用。代码锚点：`internal/control/server.go:17`、`internal/control/server.go:57`、`internal/control/client.go:9`、`internal/control/interactive_client.go:41`、`internal/control/output_splitter.go:15`。
 
 `internal/ilink` 是外部 HTTP API 适配层，封装 QR 登录、拉取更新、发送消息、发送 typing 状态和 bot 配置读取。所有远端请求都通过 `Client.BaseURL` 组装 endpoint。代码锚点：`internal/ilink/client.go:21`、`internal/ilink/client.go:57`、`internal/ilink/client.go:131`、`internal/ilink/client.go:174`。
 
@@ -78,8 +79,8 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 
 - Runtime config 与 auth store 分离：启动参数使用 TOML，运行态凭据、游标和上下文继续放在 auth store JSON 中，避免把可提交的启动配置和本地凭据混在一起。
 - 默认本地存储统一收敛到 `~/.webot-msg/`：固定 Runtime config 路径是 `~/.webot-msg/config/webot-msg.toml`，默认 auth store 使用 `~/.webot-msg/config/auth.json`，默认标准日志使用 `~/.webot-msg/logs/webot-msg.log`，默认保护开关状态文件使用 `~/.webot-msg/state/protection.json`，默认 control socket 使用 `~/.webot-msg/webot-msg.sock`；TOML 内部的 auth / log / socket 路径配置仍可指向其他位置，保护开关状态文件路径固定不暴露配置项。
-- 配置入口保持克制：本项目默认读取 `~/.webot-msg/config/webot-msg.toml`，只保留兼容 `-c`、兼容 `-port` 和 `serve` / `console` 命令两类运行形态，不新增环境变量配置入口。
-- systemd 交互通过本地 Unix socket，不尝试 attach systemd service 的 stdin，也不通过再启动第二个服务实例进入控制台。
+- 配置入口保持克制：本项目固定读取 `~/.webot-msg/config/webot-msg.toml`，不提供 CLI flag、子命令或环境变量配置入口；API 端口只能通过 TOML `api.port` 或内置默认值决定。
+- systemd 交互通过本地 Unix socket，不尝试 attach systemd service 的 stdin，也不通过再启动第二个服务实例进入控制台；当前没有第一方 attach 命令，使用 `nc -U` / `socat` 等本地 socket 客户端连接。
 - 控制台补全只来源于静态命令表：Tab 补全覆盖已声明顶层命令和固定子命令，不补全 bot 序号、botID、文件路径、Redis 配置、历史消息或普通文本；补全本身不触发 Controller 调用。
 - auth store 权限按凭据处理：新建 auth 目录使用 owner-only，auth 文件保存和 legacy copy 后都保持 owner-only；日志文件不使用 auth store 权限策略。
 - Linux 部署入口保持仓库脚本形态：本项目提供 Bash 脚本管理单个 `webot-msg.service`，不引入 `.deb`、RPM、Docker、Ansible 或多实例管理。
@@ -94,7 +95,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 
 ## 5. 代码锚点
 
-- `cmd/webot-msg/main.go:main` — CLI 入口，负责参数解析和 app 启动。
+- `cmd/webot-msg/main.go:main` — 唯一无参 CLI 入口，负责拒绝参数、加载 Runtime config 和启动 app。
 - `internal/runtimeconfig/config.go:Config` — TOML Runtime config 的结构、默认值、校验和存储准备。
 - `internal/logfile/writer.go:SizeWriter` — 标准日志文件输出和简单大小轮转。
 - `internal/app/app.go:App.Run` — 启动编排主流程。
@@ -103,9 +104,9 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - `internal/protection/state_store.go:StateStore` — 保护开关状态文件读写，负责缺失 / 损坏语义和原子保存。
 - `internal/protection/redis_guard.go:RedisGuard` — Redis 保护状态、per-bot key 和 Lua 状态机。
 - `internal/control/server.go:Server` — 运行中 service 的 Unix socket 控制台 server。
-- `internal/control/client.go:Attach` — `webot-msg console` 非 TTY 路径使用的 line mode 控制台连接 client。
-- `internal/control/interactive_client.go:AttachInteractive` — `webot-msg console` TTY 路径使用的客户端行编辑控制台连接 client。
-- `internal/control/output_splitter.go:outputSplitter` — interactive attach 下把 server 字节流切成整行输出和 prompt 尾部的 client 端状态机。
+- `internal/control/client.go:Attach` — 休眠的 line mode 控制台连接 helper，当前可执行入口不调用。
+- `internal/control/interactive_client.go:AttachInteractive` — 休眠的客户端行编辑控制台连接 helper，当前可执行入口不调用。
+- `internal/control/output_splitter.go:outputSplitter` — 休眠客户端行编辑 helper 使用的 server 字节流切分状态机。
 - `internal/app/app.go:monitorWeixin` — 每个 bot 的长轮询监听循环。
 - `internal/api/server.go:handleBotAction` — HTTP API 鉴权和动作分发。
 - `internal/config/store.go:Store` — 本地配置持久化和并发保护。
@@ -120,7 +121,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 ## 6. 已知约束 / 边界情况
 
 - auth store 包含 bot token、API token 和消息上下文，不能提交到 Git；默认运行时路径是 `~/.webot-msg/config/auth.json`，旧 `./config/auth.json` 只作为一次性兼容复制源。来源：`.gitignore`、`internal/config/store.go:14`、`internal/runtimeconfig/config.go:20`。
-- 默认 Runtime config 文件 `~/.webot-msg/config/webot-msg.toml` 不存在时回退内置默认值；显式 `-c` 读取指定 TOML，显式 `-port` 会覆盖 TOML `api.port`。代码锚点：`cmd/webot-msg/main.go:146`、`cmd/webot-msg/main.go:140`。
+- 默认 Runtime config 文件 `~/.webot-msg/config/webot-msg.toml` 不存在时回退内置默认值；CLI 不接受配置路径或端口覆盖参数。代码锚点：`cmd/webot-msg/main.go:15`、`cmd/webot-msg/main.go:99`。
 - Runtime config 使用严格 TOML 模式，未知 section / key 会启动失败；`ilink.base_url` 只接受 `http` 或 `https` scheme。代码锚点：`internal/runtimeconfig/config.go:129`、`internal/runtimeconfig/config.go:376`。
 - 执行 `/protection enable` 时要求 Redis 可连接；`redis.url` 只接受 `redis` / `rediss` scheme，`redis.password` 和 URL userinfo password 不能同时配置，URL parse 错误不会回显原始 userinfo。启用失败不会把系统切到半开启状态。代码锚点：`internal/protection/redis_guard.go:29`、`internal/protection/redis_guard.go:43`、`internal/protection/runtime_guard.go:31`。
 - 保护开关启动恢复只尝试一次：状态文件记录开启但 Redis 不可用时，服务继续启动、保护保持关闭、状态文件不改写，并提示用户修复 Redis 后手动 `/protection enable`；Redis 随后恢复不会自动开启保护。代码锚点：`internal/app/app.go:257`。
@@ -132,7 +133,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - 冻结期间 HTTP API 普通文本发送返回 `429`，控制台普通文本发送返回保护锁定错误；`/bots/{botID}/typing` 不计入下发限制，也不受冻结状态影响。代码锚点：`internal/api/server.go:121`、`internal/app/app.go:202`、`internal/api/server.go:129`。
 - HTTP API token 为空或不匹配都会返回 unauthorized，不能绕过本地 `APIToken` 校验。代码锚点：`internal/api/server.go:83`。
 - 控制台 `/exit` 或 `/quit` 只关闭当前控制台会话，不停止 service；直接前台 TTY 控制台下按 Ctrl+C 会恢复终端、保存配置并退出进程；systemd 部署下停止进程仍用 `systemctl stop webot-msg` 或部署脚本 `stop`。stdin 关闭不是主动退出，服务会继续后台运行。代码锚点：`internal/console/console.go:62`、`internal/console/console.go:74`、`internal/app/app.go:138`。
-- Tab 补全只在本地 stdin/stdout 都是 TTY 的控制台下工作，包括直接前台运行 service 的控制台和 `webot-msg console` 的 interactive attach；`printf '/exit\n' | webot-msg console` 这类管道输入以及手工使用 `nc` / `socat` 直接连 control socket 都走 line mode，不支持按键级补全。代码锚点：`cmd/webot-msg/main.go:31`、`internal/control/interactive_client.go:26`、`internal/control/client.go:9`、`internal/control/server.go:57`。
+- Tab 补全只在本地 stdin/stdout 都是 TTY 的前台 console 下工作；非 TTY stdin 和手工使用 `nc -U` / `socat` 直连 control socket 都走 line mode，不支持按键级补全。代码锚点：`internal/console/terminal_reader.go:20`、`internal/control/server.go:57`。
 - Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
 - `webot-msg.service` 使用部署用户运行，`ExecStart` 指向 `/usr/local/bin/webot-msg`；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
 - 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段或删除 `~/.webot-msg/config/auth.json`；升级可能追加缺失的 `[redis]` section。真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。

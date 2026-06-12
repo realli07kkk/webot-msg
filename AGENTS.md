@@ -22,8 +22,8 @@ scripts live in `.codestable/reference/` and `.codestable/tools/`.
 
 ## Build, Test, and Development Commands
 
-- `go run ./cmd/webot-msg -port 26322`: run the service locally with the
-  default API port.
+- `go run ./cmd/webot-msg`: run the service locally with the default runtime
+  config path and API port.
 - `go build -o bin/webot-msg ./cmd/webot-msg`: build a local binary under
   `bin/`.
 - `go test ./...`: run all package tests.

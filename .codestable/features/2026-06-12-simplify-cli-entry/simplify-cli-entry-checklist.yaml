@@ -1,0 +1,48 @@
+feature: 2026-06-12-simplify-cli-entry
+created: 2026-06-12
+
+steps:
+  - action: "入口骨架收敛：改 cmd/webot-msg/main.go——删 cliOptions/parseCLI/isCommand 与 console 分支，main() 开头加无参校验，简化 buildRuntimeConfig/loadRuntimeConfig 签名为固定读默认配置路径，端口取 resolved.API.Port，去掉 control/term 等只服务于 console 分支的 import"
+    exit_signal: "go build ./cmd/webot-msg 通过；默认配置缺失下运行 webot-msg 能进前台 console；带任意参数（serve/console/-c/-port/任意串）报错且非零退出"
+    status: done
+  - action: "用户提示文案对齐：改 internal/app/app.go:117 文案（去掉 Use 'webot-msg console' 指引，改为 socat/nc 连 control socket 或等价表述），同步改 cmd/webot-msg/main.go:104 legacyProtectionWarning 文案中 in webot-msg console 的措辞（判断逻辑与测试断言子串不动）"
+    exit_signal: "go build ./... 通过；grep 全仓运行期文案不再出现 'webot-msg console'"
+    status: done
+  - action: "测试对齐：cmd/webot-msg/main_test.go 删除 parseCLI（console/-c/未知命令）、-port 覆盖、buildRuntimeConfig 多参数用例；按新签名补默认配置回退与默认路径读取最小用例；保留 legacyProtectionWarning 用例"
+    exit_signal: "go test ./... 全绿"
+    status: done
+  - action: "文档对齐：更新 docs/user/runtime-config.md 与 docs/user/linux-systemd-deploy.md 的 CLI 章节（去掉 -c/-port/webot-msg console 推荐用法，systemd 交互改为 socat/nc 说明或明确需交互时前台运行）；AGENTS.md 运行命令改为无参 go run ./cmd/webot-msg（CLAUDE.md 是 symlink 无需另改）；skill/webot-msg-send/SKILL.md 去掉按 -port N / -c path 定位端口与配置的说法，改为只看默认 TOML"
+    exit_signal: "四份文档（runtime-config.md、linux-systemd-deploy.md、AGENTS.md、skill/webot-msg-send/SKILL.md）不再把 -c/-port/webot-msg console 作为推荐用法呈现"
+    status: done
+
+checks:
+  - item: "无参 webot-msg 在 TTY 下启动完整 service 并进入前台 console，行为与改动前 webot-msg serve 一致"
+    source: 验收契约 C1
+    status: passed
+  - item: "非 TTY（管道/systemd）下无参 webot-msg 正常启动、不因扫码阻塞，control socket 正常开放"
+    source: 验收契约 C2
+    status: passed
+  - item: "默认配置含 api.port=N 时监听 N；默认配置缺失时回退内置默认端口"
+    source: 验收契约 C3
+    status: passed
+  - item: "webot-msg serve 非零退出且 stderr 一行错误"
+    source: 验收契约 C4
+    status: passed
+  - item: "webot-msg console 非零退出且 stderr 错误"
+    source: 验收契约 C5
+    status: passed
+  - item: "webot-msg -port 8080 / -c x.toml / foo bar 均非零退出且 stderr 错误"
+    source: 验收契约 C6
+    status: passed
+  - item: "internal/control/server.go 仍在 app.Run 中启动，control socket 仍 listening"
+    source: 明确不做 N1
+    status: passed
+  - item: "internal/control/{client,interactive_client,output_splitter}.go 文件仍存在，go build/go test 全仓通过（休眠库保留）"
+    source: 明确不做 N2
+    status: passed
+  - item: "auth legacy 复制迁移与 legacyProtectionWarning 判断逻辑不变、对应测试仍存在且通过（仅文案措辞按设计 2.2 调整）"
+    source: 明确不做 N3
+    status: passed
+  - item: "Runtime config TOML schema 不变，runtimeconfig 包无字段增删"
+    source: 明确不做 N4
+    status: passed

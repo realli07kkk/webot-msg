@@ -14,7 +14,7 @@ last_reviewed: 2026-06-11
 
 `webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限和 Redis 连接。
 
-如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。`-c` 仍可用于旧脚本或临时调试，但部署脚本和推荐用法都使用默认路径，避免 service 和 console 读取不同配置。
+如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。CLI 不再提供启动参数覆盖入口；要调整端口、auth store 或 control socket，请修改默认 TOML 后重启服务。
 
 ## 前置条件
 
@@ -73,28 +73,13 @@ go run ./cmd/webot-msg
 webot-msg
 ```
 
-4. 临时覆盖端口：
-
-```bash
-./bin/webot-msg -port 8080
-```
-
-显式 `-port` 会临时覆盖 TOML 里的 `api.port`。
-
-兼容旧脚本时，也可以显式指定配置文件：
-
-```bash
-./bin/webot-msg -c /path/to/webot-msg.toml
-./bin/webot-msg console -c /path/to/webot-msg.toml
-```
-
-如果 service 使用了自定义 `-c`，进入控制台时必须传同一份配置，否则可能连接到另一套 control socket。
+4. 调整端口或路径时，修改 `~/.webot-msg/config/webot-msg.toml` 后重启服务。`webot-msg` 只接受无参启动，配置路径固定为默认路径。
 
 ## 配置项
 
 | 配置项 | 默认值 | 怎么调 |
 |---|---|---|
-| `api.port` | `26322` | 改成 `1` 到 `65535` 之间的端口；也可以启动时用 `-port` 临时覆盖 |
+| `api.port` | `26322` | 改成 `1` 到 `65535` 之间的端口；修改后重启服务生效 |
 | `storage.auth_path` | `~/.webot-msg/config/auth.json` | 改成 auth store JSON 文件路径；支持 `~` 开头的 home 路径 |
 | `control.socket_path` | `~/.webot-msg/webot-msg.sock` | 本地控制台连接正在运行服务的 Unix socket 路径；支持 `~` 开头的 home 路径 |
 | `ilink.base_url` | `https://ilinkai.weixin.qq.com` | 只接受 `http://` 或 `https://` 地址，必须包含 host |
@@ -161,9 +146,9 @@ webot-msg
 
 ## 常见问题
 
-Q: 可以用 `-c` 指向另一份配置吗？
+Q: 可以在启动时指向另一份配置吗？
 
-A: 可以，`-c` 作为兼容入口保留。但推荐保持默认路径，尤其是 systemd 部署场景；如果 service 使用自定义配置，`webot-msg console` 也必须使用同一份配置。
+A: 不可以。当前入口固定读取 `~/.webot-msg/config/webot-msg.toml`。需要换配置时，把内容写入默认路径后重启服务。
 
 Q: 配置里写错字段名会怎样？
 
@@ -186,25 +171,21 @@ auth_path = "./config/auth.json"
 
 Q: 怎么只临时换端口，不改 TOML？
 
-A: 启动时传 `-port`：
-
-```bash
-./bin/webot-msg -port 19090
-```
+A: 当前 CLI 不支持临时端口覆盖。修改 TOML 的 `api.port` 后重启服务。
 
 Q: systemd 启动后怎么进入控制台？
 
-A: 用同一份配置连接本地控制台 socket：
+A: 连接默认配置里的本地 control socket，例如默认路径：
 
 ```bash
-webot-msg console
+socat - UNIX-CONNECT:"$HOME/.webot-msg/webot-msg.sock"
 ```
 
 控制台内 `/exit` 或 `/quit` 只退出这次控制台连接，不会停止 systemd 服务。停止服务仍使用 `systemctl stop webot-msg` 或部署脚本的 `stop`。
 
 直接前台运行 service 的交互式 TTY 控制台支持用 Tab 补全已声明命令和固定子命令，例如 `/log<Tab>` 补成 `/login`，`/pro<Tab>` 补成 `/protection `，`/protection st<Tab>` 补成 `/protection status`。该模式下按 Ctrl+C 会保存配置并退出进程，`/exit` 和 `/quit` 仍只关闭 console session。
 
-`webot-msg console` 连接运行中 service 时，如果本地 stdin/stdout 都是 TTY，也支持同一套 Tab 补全。为保持兼容，client 只在按 Enter 后向 socket 发送整行文本加换行，不发送协议头；脚本管道和非 TTY 输入仍按普通 line mode 处理，不提供按键级补全。
+通过 `socat` / `nc -U` 连接 control socket 时按普通 line mode 输入命令，不提供按键级 Tab 补全。
 
 ## 相关功能
 

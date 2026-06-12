@@ -114,7 +114,7 @@ func (a *App) Run(port int) error {
 				log.Printf("QR login failed: %v\n", err)
 			}
 		} else {
-			fmt.Println("No login bots found. Use 'webot-msg console' to open a control console and run /login.")
+			fmt.Printf("No login bots found. Connect to unix://%s with socat or nc and run /login.\n", a.controlSocketPath)
 		}
 	} else {
 		fmt.Printf("Loaded %d bots.\n", a.store.Count())

@@ -2,43 +2,25 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/realli07kkk/webot-msg/internal/app"
-	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/logfile"
 	"github.com/realli07kkk/webot-msg/internal/protection"
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
-	"golang.org/x/term"
 )
 
 func main() {
-	opts, err := parseCLI(os.Args[1:])
-	if err != nil {
-		log.Fatal(err)
+	if len(os.Args[1:]) > 0 {
+		fmt.Fprintln(os.Stderr, "webot-msg does not accept arguments; run `webot-msg` without arguments")
+		os.Exit(2)
 	}
 
-	resolved, err := buildRuntimeConfig(opts.configPath, opts.configSet, opts.port, opts.portSet)
+	resolved, err := buildRuntimeConfig()
 	if err != nil {
 		log.Fatal(err)
-	}
-
-	if opts.command == "console" {
-		attach := control.Attach
-		if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
-			attach = func(socketPath string, in io.Reader, out io.Writer) error {
-				return control.AttachInteractive(socketPath, os.Stdin, os.Stdout)
-			}
-		}
-		if err := attach(resolved.Control.SocketPath, os.Stdin, os.Stdout); err != nil {
-			log.Fatal(err)
-		}
-		return
 	}
 
 	legacyAuthCopied, err := resolved.PrepareStorage()
@@ -101,82 +83,20 @@ func legacyProtectionWarning(cfg runtimeconfig.Config) string {
 	if !cfg.HasLegacyProtectionSettings() {
 		return ""
 	}
-	return "legacy [protection] config is ignored; configure [redis] and run /protection enable once in webot-msg console"
-}
-
-type cliOptions struct {
-	command    string
-	configPath string
-	configSet  bool
-	port       int
-	portSet    bool
+	return "legacy [protection] config is ignored; configure [redis] and run /protection enable once in the console"
 }
 
 var runtimeConfigPath = runtimeconfig.DefaultConfigPath
 
-func parseCLI(args []string) (cliOptions, error) {
-	opts := cliOptions{
-		command: "serve",
-		port:    runtimeconfig.DefaultPort,
-	}
-
-	flagArgs := args
-	if len(args) > 0 && isCommand(args[0]) {
-		opts.command = args[0]
-		flagArgs = args[1:]
-	}
-
-	fs := flag.NewFlagSet("webot-msg", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	configPath := fs.String("c", "", "TOML config file path (deprecated; default is ~/.webot-msg/config/webot-msg.toml)")
-	port := fs.Int("port", runtimeconfig.DefaultPort, "API server port")
-	if err := fs.Parse(flagArgs); err != nil {
-		return cliOptions{}, err
-	}
-
-	if fs.NArg() > 0 {
-		if opts.command != "serve" {
-			return cliOptions{}, fmt.Errorf("unexpected argument(s): %s", strings.Join(fs.Args(), " "))
-		}
-		if fs.NArg() > 1 || !isCommand(fs.Arg(0)) {
-			return cliOptions{}, fmt.Errorf("unknown command or argument: %s", strings.Join(fs.Args(), " "))
-		}
-		opts.command = fs.Arg(0)
-	}
-
-	opts.configPath = *configPath
-	opts.port = *port
-	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "c" {
-			opts.configSet = true
-		}
-		if f.Name == "port" {
-			opts.portSet = true
-		}
-	})
-	return opts, nil
-}
-
-func isCommand(value string) bool {
-	return value == "serve" || value == "console"
-}
-
-func buildRuntimeConfig(configPath string, configSet bool, port int, portSet bool) (runtimeconfig.Config, error) {
-	cfg, err := loadRuntimeConfig(configPath, configSet)
+func buildRuntimeConfig() (runtimeconfig.Config, error) {
+	cfg, err := loadRuntimeConfig()
 	if err != nil {
 		return runtimeconfig.Config{}, err
-	}
-	if portSet {
-		cfg.API.Port = port
 	}
 	return cfg.Resolve()
 }
 
-func loadRuntimeConfig(configPath string, configSet bool) (runtimeconfig.Config, error) {
-	if configSet {
-		return runtimeconfig.LoadFile(configPath)
-	}
-
+func loadRuntimeConfig() (runtimeconfig.Config, error) {
 	cfg, err := runtimeconfig.LoadFile(runtimeConfigPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

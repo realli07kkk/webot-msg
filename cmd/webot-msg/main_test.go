@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,7 +15,7 @@ func TestBuildRuntimeConfigUsesConfigPort(t *testing.T) {
 	configPath := writeRuntimeConfig(t, "[api]\nport = 18080\n")
 	setRuntimeConfigPath(t, configPath)
 
-	cfg, err := buildRuntimeConfig("", false, runtimeconfig.DefaultPort, false)
+	cfg, err := buildRuntimeConfig()
 	if err != nil {
 		t.Fatalf("buildRuntimeConfig() error = %v", err)
 	}
@@ -23,64 +25,10 @@ func TestBuildRuntimeConfigUsesConfigPort(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeConfigPortFlagOverridesConfig(t *testing.T) {
-	configPath := writeRuntimeConfig(t, "[api]\nport = 18080\n")
-	setRuntimeConfigPath(t, configPath)
-
-	cfg, err := buildRuntimeConfig("", false, 19090, true)
-	if err != nil {
-		t.Fatalf("buildRuntimeConfig() error = %v", err)
-	}
-
-	if cfg.API.Port != 19090 {
-		t.Fatalf("API.Port = %d, want 19090", cfg.API.Port)
-	}
-}
-
-func TestParseCLIConsoleCommandBeforeFlags(t *testing.T) {
-	opts, err := parseCLI([]string{"console"})
-	if err != nil {
-		t.Fatalf("parseCLI() error = %v", err)
-	}
-
-	if opts.command != "console" {
-		t.Fatalf("command = %q, want console", opts.command)
-	}
-}
-
-func TestParseCLIConsoleCommandAfterFlags(t *testing.T) {
-	opts, err := parseCLI([]string{"-port", "19090", "console"})
-	if err != nil {
-		t.Fatalf("parseCLI() error = %v", err)
-	}
-
-	if opts.command != "console" {
-		t.Fatalf("command = %q, want console", opts.command)
-	}
-	if !opts.portSet || opts.port != 19090 {
-		t.Fatalf("portSet=%v port=%d, want true 19090", opts.portSet, opts.port)
-	}
-}
-
-func TestBuildRuntimeConfigUsesExplicitConfigPath(t *testing.T) {
-	defaultPath := writeRuntimeConfig(t, "[api]\nport = 18080\n")
-	explicitPath := writeRuntimeConfig(t, "[api]\nport = 19090\n")
-	setRuntimeConfigPath(t, defaultPath)
-
-	cfg, err := buildRuntimeConfig(explicitPath, true, runtimeconfig.DefaultPort, false)
-	if err != nil {
-		t.Fatalf("buildRuntimeConfig() error = %v", err)
-	}
-
-	if cfg.API.Port != 19090 {
-		t.Fatalf("API.Port = %d, want 19090", cfg.API.Port)
-	}
-}
-
 func TestBuildRuntimeConfigFallsBackWhenDefaultConfigMissing(t *testing.T) {
 	setRuntimeConfigPath(t, filepath.Join(t.TempDir(), "missing.toml"))
 
-	cfg, err := buildRuntimeConfig("", false, runtimeconfig.DefaultPort, false)
+	cfg, err := buildRuntimeConfig()
 	if err != nil {
 		t.Fatalf("buildRuntimeConfig() error = %v", err)
 	}
@@ -90,20 +38,45 @@ func TestBuildRuntimeConfigFallsBackWhenDefaultConfigMissing(t *testing.T) {
 	}
 }
 
-func TestParseCLIAcceptsConfigFlagForCompatibility(t *testing.T) {
-	opts, err := parseCLI([]string{"-c", "config.toml"})
-	if err != nil {
-		t.Fatalf("parseCLI() error = %v", err)
+func TestMainRejectsArguments(t *testing.T) {
+	if argsValue := os.Getenv("WEBOT_MSG_TEST_REJECT_ARGS"); argsValue != "" {
+		os.Args = append([]string{"webot-msg"}, strings.Split(argsValue, "\t")...)
+		main()
+		return
 	}
 
-	if !opts.configSet || opts.configPath != "config.toml" {
-		t.Fatalf("configSet=%v configPath=%q, want true config.toml", opts.configSet, opts.configPath)
+	tests := [][]string{
+		{"serve"},
+		{"console"},
+		{"-port", "8080"},
+		{"-c", "x.toml"},
+		{"foo", "bar"},
 	}
-}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=TestMainRejectsArguments")
+			cmd.Env = append(os.Environ(), "WEBOT_MSG_TEST_REJECT_ARGS="+strings.Join(args, "\t"))
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
 
-func TestParseCLIRejectsUnknownCommand(t *testing.T) {
-	if _, err := parseCLI([]string{"login"}); err == nil {
-		t.Fatal("parseCLI() error = nil, want error")
+			err := cmd.Run()
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				t.Fatalf("main() error = %v, want exit error", err)
+			}
+			if exitErr.ExitCode() != 2 {
+				t.Fatalf("exit code = %d, want 2", exitErr.ExitCode())
+			}
+			if stdout.String() != "" {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+			want := "webot-msg does not accept arguments; run `webot-msg` without arguments"
+			if got := strings.TrimSpace(stderr.String()); got != want {
+				t.Fatalf("stderr = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

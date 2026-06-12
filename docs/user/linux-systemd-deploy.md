@@ -75,7 +75,7 @@ ExecStart=/usr/local/bin/webot-msg
 进入 systemd 服务的控制台时，不要再直接启动一个新的 `webot-msg` 实例。应连接正在运行服务暴露的本地 socket：
 
 ```bash
-webot-msg console
+socat - UNIX-CONNECT:"$HOME/.webot-msg/webot-msg.sock"
 ```
 
 在控制台里执行 `/login` 可以扫码添加 bot。`/exit` 或 `/quit` 只退出这次控制台连接，服务继续运行。真正停止进程仍使用：
@@ -84,7 +84,13 @@ webot-msg console
 ./scripts/linux-service.sh stop
 ```
 
-`webot-msg console` 在本地 stdin/stdout 都是 TTY 时支持按键级 Tab 补全，候选与直接前台控制台一致，例如 `/pro<Tab>` 会补成 `/protection `。为兼容已运行的旧 service，client 仍只在按 Enter 后向 socket 发送整行文本，不发送额外协议头。通过管道执行命令时仍使用 line mode 行输入，不提供按键级补全，例如 `printf '/exit\n' | webot-msg console`。
+如果目标机器没有 `socat`，也可以使用支持 Unix socket 的 `nc`：
+
+```bash
+nc -U "$HOME/.webot-msg/webot-msg.sock"
+```
+
+通过 socket 连接时按普通 line mode 输入命令，不提供按键级 Tab 补全。需要 Tab 补全时，在 TTY 里直接前台运行 `webot-msg`。
 
 ## 升级
 
@@ -99,7 +105,7 @@ webot-msg console
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
-升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段，也不会把原本关闭的发送保护自动打开。已经通过 `/protection enable` 成功开启过的实例，会在升级重启后读取 `~/.webot-msg/state/protection.json` 并尝试一次自动恢复保护；如果 Redis 不可用，服务仍会启动但保护保持关闭，并在日志中提示可修复后手动执行 `/protection enable`。首次开启保护时，如果旧配置缺少 `[redis]` section，脚本会追加默认 Redis 配置；确认 Redis 地址和密码后，进入 `webot-msg console` 执行 `/protection enable`。
+升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段，也不会把原本关闭的发送保护自动打开。已经通过 `/protection enable` 成功开启过的实例，会在升级重启后读取 `~/.webot-msg/state/protection.json` 并尝试一次自动恢复保护；如果 Redis 不可用，服务仍会启动但保护保持关闭，并在日志中提示可修复后手动执行 `/protection enable`。首次开启保护时，如果旧配置缺少 `[redis]` section，脚本会追加默认 Redis 配置；确认 Redis 地址和密码后，连接 control socket 执行 `/protection enable`。
 
 ## 默认配置
 
