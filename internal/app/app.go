@@ -27,8 +27,9 @@ import (
 type client interface {
 	QRLoginWithWriter(out io.Writer) (*config.UserConfig, error)
 	GetUpdates(user config.UserConfig, timeout time.Duration) (*ilink.UpdatesResponse, error)
-	SendMessage(user config.UserConfig, to string, text string, contextToken string) error
+	SendMessageContext(ctx context.Context, user config.UserConfig, to string, text string, contextToken string) error
 	SendTyping(user config.UserConfig, status int) error
+	SendTypingContext(ctx context.Context, user config.UserConfig, status int) error
 }
 
 type Options struct {

@@ -1,0 +1,99 @@
+feature: 2026-06-12-otel-tracing
+created: 2026-06-12
+
+steps:
+  - action: "配置骨架：runtimeconfig 新增 [telemetry] section 的解析、默认值与校验（endpoint / protocol / insecure / service_name / headers / resource_attributes）"
+    exit_signal: "单测覆盖缺省、合法、非法（未知 key / 非法 protocol）三类输入"
+    status: done
+  - action: "计算节点：internal/telemetry 包实现 Setup（Endpoint 为空返回 no-op shutdown；grpc / http 两种 OTLP exporter；组装 resource 与 headers；注册全局 TracerProvider）"
+    exit_signal: "单测覆盖未启用 / 启用 / 非法 protocol 三条路径"
+    status: done
+  - action: "编排接通（入站）：main 在启动序列插入 telemetry.Setup + defer 带超时的 shutdown；api.Server.Start 的 mux 外层包 otelhttp server 中间件"
+    exit_signal: "编译绿灯 + 现有测试全过；未配置 [telemetry] 时启动日志无 telemetry 痕迹"
+    status: done
+  - action: "编排接通（出站）：ilink.Client 改为持有可注入的共享 instrumented transport，保留各调用原有超时语义"
+    exit_signal: "编译绿灯 + 现有测试全过"
+    status: done
+  - action: "端到端验证：本地 OTLP collector 跑通一条 API 发送链路"
+    exit_signal: "collector 看到入站 server span 和 iLink 出站 client span，trace_id 相同"
+    status: done
+  - action: "测试覆盖收尾：补齐验收契约剩余场景（不可达 endpoint、敏感信息约束、insecure 调试路径等）"
+    exit_signal: "第 3 节每条验收场景都有可观察证据"
+    status: done
+
+checks:
+  - item: "TOML [telemetry] schema 与 design 2.1 一致：endpoint / protocol(默认 grpc) / insecure / service_name(默认 webot-msg) / headers map / resource_attributes map"
+    source: 名词契约
+    status: passed
+  - item: "telemetry.Setup 契约：Endpoint 为空 → no-op shutdown + nil；protocol 非 grpc/http → error；正常 → 可 flush 的 shutdown"
+    source: 名词契约
+    status: passed
+  - item: "ilink.Client 持有共享注入 transport，各调用超时语义（含长轮询）不变"
+    source: 名词契约
+    status: passed
+  - item: "启动序列：telemetry.Setup 在 PrepareStorage 之后 app.New 之前，Setup 失败走 fatalStartupError，退出 defer shutdown 带超时上限"
+    source: 编排骨架
+    status: passed
+  - item: "otelhttp 中间件与 transport 无条件挂载，启用与否只由全局 TracerProvider 决定（未配置时 noop）"
+    source: 编排骨架
+    status: passed
+  - item: "配置非法（未知 key / 非法 protocol / endpoint 格式错）启动失败并指明具体配置项；运行期导出失败只记日志不影响业务请求"
+    source: 流程级约束
+    status: passed
+  - item: "span 属性与 resource 不含消息正文、BotToken、APIToken、ContextToken；服务端 span 的 URL 类属性剥掉 query string；不开启 header 采集"
+    source: 流程级约束
+    status: passed
+  - item: "启动摘要日志增加 telemetry 启用状态一行，endpoint 可打印，headers / resource_attributes 的值不打印"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点 1：runtimeconfig 的 [telemetry] section 及默认值（新增）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点 2：cmd/webot-msg/main.go 中 telemetry.Setup + defer shutdown（新增）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点 3：api.Server.Start mux 外层 otelhttp server 中间件（修改）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点 4：ilink.Client 共享 instrumented transport 注入（修改）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点 5：go.mod 的 go.opentelemetry.io/* 依赖（新增）"
+    source: 挂载点
+    status: passed
+  - item: "go.mod 中 grep 不到 otlpmetric、otlplog 或任何厂商私有 telemetry SDK"
+    source: 范围守护
+    status: passed
+  - item: "代码中 grep 不到 os.Getenv(\"OTEL（不引入环境变量配置入口）"
+    source: 范围守护
+    status: passed
+  - item: "监听循环、Redis 保护操作、控制台命令无手工 span 埋点"
+    source: 范围守护
+    status: passed
+  - item: "不存在采样率相关配置 key（首期固定全采样）"
+    source: 范围守护
+    status: passed
+  - item: "场景 1：endpoint 指向本地 collector，POST /bots/{botID}/messages 成功 → collector 收到入站 + 出站 span 且 trace_id 相同"
+    source: 验收场景
+    status: passed
+  - item: "场景 2：[telemetry] 缺失或 endpoint 为空 → 无 OTLP 出站连接，API / 控制台行为与改动前一致"
+    source: 验收场景
+    status: passed
+  - item: "场景 3：resource_attributes 配置 token → 导出数据的 resource 含 token 属性"
+    source: 验收场景
+    status: passed
+  - item: "场景 4：headers 配置任意 header → OTLP 导出请求携带该 header"
+    source: 验收场景
+    status: passed
+  - item: "场景 5：protocol 非法或 [telemetry] 下未知 key → 启动失败且错误指明具体配置项"
+    source: 验收场景
+    status: passed
+  - item: "场景 6：endpoint 不可达时调 API 发消息 → 返回 200，仅日志可见导出失败"
+    source: 验收场景
+    status: passed
+  - item: "场景 7：启用 telemetry 后前台 Ctrl+C → 进程在 shutdown 超时上限内退出，不挂死"
+    source: 验收场景
+    status: passed
+  - item: "场景 8：insecure = true + 本地无 TLS collector → 明文上报成功"
+    source: 验收场景
+    status: passed

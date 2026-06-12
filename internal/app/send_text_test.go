@@ -246,7 +246,7 @@ func (f *fakeClient) GetUpdates(config.UserConfig, time.Duration) (*ilink.Update
 	return nil, errors.New("not implemented")
 }
 
-func (f *fakeClient) SendMessage(_ config.UserConfig, _ string, text string, _ string) error {
+func (f *fakeClient) SendMessageContext(_ context.Context, _ config.UserConfig, _ string, text string, _ string) error {
 	if f.sendErr != nil {
 		return f.sendErr
 	}
@@ -255,6 +255,10 @@ func (f *fakeClient) SendMessage(_ config.UserConfig, _ string, text string, _ s
 }
 
 func (f *fakeClient) SendTyping(config.UserConfig, int) error {
+	return nil
+}
+
+func (f *fakeClient) SendTypingContext(context.Context, config.UserConfig, int) error {
 	return nil
 }
 

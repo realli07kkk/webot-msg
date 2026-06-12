@@ -3,6 +3,7 @@ package runtimeconfig
 import (
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -27,6 +28,8 @@ const (
 	DefaultTimeWarningBefore   = "30m"
 	DefaultTimeCheckInterval   = "1m"
 	DefaultReminderText        = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
+	DefaultTelemetryProtocol   = "grpc"
+	DefaultTelemetryService    = "webot-msg"
 	LegacyAuthPath             = "./config/auth.json"
 )
 
@@ -38,6 +41,7 @@ type Config struct {
 	Control             ControlConfig          `toml:"control"`
 	Ilink               IlinkConfig            `toml:"ilink"`
 	Log                 LogConfig              `toml:"log"`
+	Telemetry           TelemetryConfig        `toml:"telemetry"`
 	Protection          ProtectionConfig       `toml:"-"`
 	ProtectionStatePath string                 `toml:"-"`
 	LegacyProtection    LegacyProtectionConfig `toml:"protection"`
@@ -64,6 +68,15 @@ type LogConfig struct {
 	FilePath     string `toml:"file_path"`
 	MaxSize      string `toml:"max_size"`
 	MaxSizeBytes int64  `toml:"-"`
+}
+
+type TelemetryConfig struct {
+	Endpoint           string            `toml:"endpoint"`
+	Protocol           string            `toml:"protocol"`
+	Insecure           bool              `toml:"insecure"`
+	ServiceName        string            `toml:"service_name"`
+	Headers            map[string]string `toml:"headers"`
+	ResourceAttributes map[string]string `toml:"resource_attributes"`
 }
 
 type ProtectionConfig struct {
@@ -123,6 +136,12 @@ func Default() Config {
 		Log: LogConfig{
 			FilePath: DefaultLogPath,
 			MaxSize:  DefaultLogMaxSize,
+		},
+		Telemetry: TelemetryConfig{
+			Protocol:           DefaultTelemetryProtocol,
+			ServiceName:        DefaultTelemetryService,
+			Headers:            map[string]string{},
+			ResourceAttributes: map[string]string{},
 		},
 		Protection: ProtectionConfig{
 			Enabled:                 false,
@@ -209,6 +228,9 @@ func (c Config) Resolve() (Config, error) {
 	if err := resolveProtection(&resolved); err != nil {
 		return Config{}, err
 	}
+	if err := resolveTelemetry(&resolved); err != nil {
+		return Config{}, err
+	}
 
 	protectionStatePath, err := expandHome(resolved.ProtectionStatePath)
 	if err != nil {
@@ -253,6 +275,34 @@ func resolveProtection(cfg *Config) error {
 	}
 	if cfg.Redis.KeyPrefix == "" {
 		cfg.Redis.KeyPrefix = DefaultRedisKeyPrefix
+	}
+	return nil
+}
+
+func resolveTelemetry(cfg *Config) error {
+	cfg.Telemetry.Endpoint = strings.TrimSpace(cfg.Telemetry.Endpoint)
+	cfg.Telemetry.Protocol = strings.TrimSpace(cfg.Telemetry.Protocol)
+	cfg.Telemetry.ServiceName = strings.TrimSpace(cfg.Telemetry.ServiceName)
+
+	if cfg.Telemetry.Protocol == "" {
+		cfg.Telemetry.Protocol = DefaultTelemetryProtocol
+	}
+	if cfg.Telemetry.ServiceName == "" {
+		cfg.Telemetry.ServiceName = DefaultTelemetryService
+	}
+	if cfg.Telemetry.Protocol != "grpc" && cfg.Telemetry.Protocol != "http" {
+		return fmt.Errorf("telemetry.protocol: must be grpc or http")
+	}
+	if cfg.Telemetry.Endpoint != "" {
+		if err := validateOTLPEndpoint(cfg.Telemetry.Endpoint); err != nil {
+			return fmt.Errorf("telemetry.endpoint: %w", err)
+		}
+	}
+	if cfg.Telemetry.Headers == nil {
+		cfg.Telemetry.Headers = map[string]string{}
+	}
+	if cfg.Telemetry.ResourceAttributes == nil {
+		cfg.Telemetry.ResourceAttributes = map[string]string{}
 	}
 	return nil
 }
@@ -413,6 +463,21 @@ func validateBaseURL(value string) (string, error) {
 		return "", fmt.Errorf("scheme must be http or https")
 	}
 	return strings.TrimRight(value, "/"), nil
+}
+
+func validateOTLPEndpoint(value string) error {
+	host, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		return fmt.Errorf("must be host:port")
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("host must not be empty")
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
 }
 
 func validateRedisURL(value string, password string) (string, error) {

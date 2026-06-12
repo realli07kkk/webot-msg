@@ -52,6 +52,73 @@ func TestLoadFileMergesDefaults(t *testing.T) {
 	if cfg.Redis.KeyPrefix != DefaultRedisKeyPrefix {
 		t.Fatalf("Redis.KeyPrefix = %q, want %q", cfg.Redis.KeyPrefix, DefaultRedisKeyPrefix)
 	}
+	if cfg.Telemetry.Endpoint != "" {
+		t.Fatalf("Telemetry.Endpoint = %q, want empty default", cfg.Telemetry.Endpoint)
+	}
+	if cfg.Telemetry.Protocol != DefaultTelemetryProtocol {
+		t.Fatalf("Telemetry.Protocol = %q, want %q", cfg.Telemetry.Protocol, DefaultTelemetryProtocol)
+	}
+	if cfg.Telemetry.ServiceName != DefaultTelemetryService {
+		t.Fatalf("Telemetry.ServiceName = %q, want %q", cfg.Telemetry.ServiceName, DefaultTelemetryService)
+	}
+	if len(cfg.Telemetry.Headers) != 0 {
+		t.Fatalf("Telemetry.Headers = %#v, want empty default", cfg.Telemetry.Headers)
+	}
+	if len(cfg.Telemetry.ResourceAttributes) != 0 {
+		t.Fatalf("Telemetry.ResourceAttributes = %#v, want empty default", cfg.Telemetry.ResourceAttributes)
+	}
+}
+
+func TestLoadFileAcceptsTelemetrySection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "webot-msg.toml")
+	content := `
+[telemetry]
+endpoint = "collector.example.com:4317"
+protocol = "http"
+insecure = true
+service_name = "custom-service"
+
+[telemetry.headers]
+Authorization = "Bearer secret"
+
+[telemetry.resource_attributes]
+token = "tencent-token"
+env = "prod"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	resolved, err := cfg.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	if resolved.Telemetry.Endpoint != "collector.example.com:4317" {
+		t.Fatalf("Telemetry.Endpoint = %q", resolved.Telemetry.Endpoint)
+	}
+	if resolved.Telemetry.Protocol != "http" {
+		t.Fatalf("Telemetry.Protocol = %q, want http", resolved.Telemetry.Protocol)
+	}
+	if !resolved.Telemetry.Insecure {
+		t.Fatal("Telemetry.Insecure = false, want true")
+	}
+	if resolved.Telemetry.ServiceName != "custom-service" {
+		t.Fatalf("Telemetry.ServiceName = %q, want custom-service", resolved.Telemetry.ServiceName)
+	}
+	if resolved.Telemetry.Headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("Telemetry.Headers[Authorization] = %q", resolved.Telemetry.Headers["Authorization"])
+	}
+	if resolved.Telemetry.ResourceAttributes["token"] != "tencent-token" {
+		t.Fatalf("Telemetry.ResourceAttributes[token] = %q", resolved.Telemetry.ResourceAttributes["token"])
+	}
+	if resolved.Telemetry.ResourceAttributes["env"] != "prod" {
+		t.Fatalf("Telemetry.ResourceAttributes[env] = %q", resolved.Telemetry.ResourceAttributes["env"])
+	}
 }
 
 func TestLoadFileAcceptsLegacyProtectionSectionWithoutEnabling(t *testing.T) {
@@ -138,6 +205,11 @@ func TestLoadFileRejectsUnknownKeys(t *testing.T) {
 			content: "[storage]\nauthpath = \"./config/auth.json\"\n",
 			wantErr: "storage.authpath",
 		},
+		{
+			name:    "unknown telemetry key",
+			content: "[telemetry]\nendpiont = \"localhost:4317\"\n",
+			wantErr: "telemetry.endpiont",
+		},
 	}
 
 	for _, tt := range tests {
@@ -153,6 +225,44 @@ func TestLoadFileRejectsUnknownKeys(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("LoadFile() error = %q, want containing %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestResolveRejectsInvalidTelemetryConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "invalid protocol",
+			mutate: func(cfg *Config) {
+				cfg.Telemetry.Endpoint = "localhost:4317"
+				cfg.Telemetry.Protocol = "tcp"
+			},
+			wantErr: "telemetry.protocol",
+		},
+		{
+			name: "invalid endpoint",
+			mutate: func(cfg *Config) {
+				cfg.Telemetry.Endpoint = "localhost"
+			},
+			wantErr: "telemetry.endpoint",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Default()
+			tt.mutate(&cfg)
+			_, err := cfg.Resolve()
+			if err == nil {
+				t.Fatal("Resolve() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Resolve() error = %q, want containing %q", err.Error(), tt.wantErr)
 			}
 		})
 	}

@@ -234,7 +234,7 @@ type fakeMessageClient struct {
 	afterSend func(text string)
 }
 
-func (f *fakeMessageClient) SendMessage(_ config.UserConfig, _ string, text string, _ string) error {
+func (f *fakeMessageClient) SendMessageContext(_ context.Context, _ config.UserConfig, _ string, text string, _ string) error {
 	f.messages = append(f.messages, text)
 	if f.afterSend != nil {
 		f.afterSend(text)

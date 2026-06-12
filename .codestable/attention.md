@@ -21,4 +21,6 @@
 
 ### 环境变量与凭证
 
+- OpenTelemetry OTLP exporter 默认会读取 `OTEL_EXPORTER_OTLP*`；本项目 telemetry 配置必须保持 TOML-only，构造 exporter 时要屏蔽这些环境变量，不能把它们作为第二配置源。
+
 ### 其他

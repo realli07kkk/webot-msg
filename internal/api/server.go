@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
@@ -15,8 +18,8 @@ import (
 )
 
 type messageClient interface {
-	SendMessage(user config.UserConfig, to string, text string, contextToken string) error
-	SendTyping(user config.UserConfig, status int) error
+	SendMessageContext(ctx context.Context, user config.UserConfig, to string, text string, contextToken string) error
+	SendTypingContext(ctx context.Context, user config.UserConfig, status int) error
 }
 
 type Server struct {
@@ -43,12 +46,37 @@ func NewServerWithClient(store *config.Store, client messageClient, guard protec
 }
 
 func (s *Server) Start(port int) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/bots/", s.handleBotAction)
-
 	addr := fmt.Sprintf(":%d", port)
 	fmt.Printf("API Server listening on http://0.0.0.0%s\n", addr)
-	return http.ListenAndServe(addr, mux)
+	return http.ListenAndServe(addr, s.handler())
+}
+
+func (s *Server) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/bots/", s.handleBotAction)
+	return instrumentedHandler(mux)
+}
+
+type originalRequestKey struct{}
+
+func instrumentedHandler(next http.Handler) http.Handler {
+	traced := otelhttp.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		original, ok := r.Context().Value(originalRequestKey{}).(*http.Request)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, original.Clone(r.Context()))
+	}), "webot-msg.api")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sanitized := r.Clone(context.WithValue(r.Context(), originalRequestKey{}, r))
+		urlCopy := *r.URL
+		urlCopy.RawQuery = ""
+		sanitized.URL = &urlCopy
+		sanitized.RequestURI = urlCopy.RequestURI()
+		traced.ServeHTTP(w, sanitized)
+	})
 }
 
 func (s *Server) handleBotAction(w http.ResponseWriter, r *http.Request) {
@@ -132,7 +160,7 @@ func (s *Server) handleTyping(w http.ResponseWriter, r *http.Request, user confi
 	if status == 0 {
 		status = 1
 	}
-	if err := s.client.SendTyping(user, status); err != nil {
+	if err := s.client.SendTypingContext(r.Context(), user, status); err != nil {
 		sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"code": 500, "error": err.Error()})
 		return
 	}

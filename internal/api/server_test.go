@@ -150,12 +150,12 @@ type fakeMessageClient struct {
 	typingStatuses []int
 }
 
-func (f *fakeMessageClient) SendMessage(_ config.UserConfig, _ string, text string, _ string) error {
+func (f *fakeMessageClient) SendMessageContext(_ context.Context, _ config.UserConfig, _ string, text string, _ string) error {
 	f.messages = append(f.messages, text)
 	return nil
 }
 
-func (f *fakeMessageClient) SendTyping(_ config.UserConfig, status int) error {
+func (f *fakeMessageClient) SendTypingContext(_ context.Context, _ config.UserConfig, status int) error {
 	f.typingStatuses = append(f.typingStatuses, status)
 	return nil
 }

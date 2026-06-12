@@ -2,6 +2,7 @@ package ilink
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -16,12 +17,15 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 	"github.com/realli07kkk/webot-msg/internal/config"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 const DefaultBaseURL = "https://ilinkai.weixin.qq.com"
 
 type Client struct {
-	BaseURL string
+	BaseURL   string
+	transport http.RoundTripper
 }
 
 type MessageItem struct {
@@ -46,11 +50,19 @@ type UpdatesResponse struct {
 }
 
 func NewClient(baseURL string) *Client {
+	return NewClientWithTransport(baseURL, instrumentedTransport(http.DefaultTransport))
+}
+
+func NewClientWithTransport(baseURL string, transport http.RoundTripper) *Client {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	if transport == nil {
+		transport = instrumentedTransport(http.DefaultTransport)
+	}
 	return &Client{
-		BaseURL: strings.TrimRight(baseURL, "/"),
+		BaseURL:   strings.TrimRight(baseURL, "/"),
+		transport: transport,
 	}
 }
 
@@ -59,7 +71,7 @@ func (c *Client) QRLogin() (*config.UserConfig, error) {
 }
 
 func (c *Client) QRLoginWithWriter(out io.Writer) (*config.UserConfig, error) {
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := c.httpClient(10 * time.Second)
 
 outer:
 	for {
@@ -89,7 +101,7 @@ outer:
 			commonHeaders(statusReq, false, "")
 			statusReq.Header.Set("iLink-App-ClientVersion", "1")
 
-			statusClient := &http.Client{Timeout: 35 * time.Second}
+			statusClient := c.httpClient(35 * time.Second)
 			statusResp, err := statusClient.Do(statusReq)
 			if err != nil {
 				continue
@@ -150,7 +162,7 @@ func (c *Client) GetUpdates(user config.UserConfig, timeout time.Duration) (*Upd
 	}
 	commonHeaders(req, true, user.BotToken)
 
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := c.httpClient(timeout)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -176,6 +188,10 @@ func (c *Client) GetUpdates(user config.UserConfig, timeout time.Duration) (*Upd
 }
 
 func (c *Client) SendMessage(user config.UserConfig, to string, text string, contextToken string) error {
+	return c.SendMessageContext(context.Background(), user, to, text, contextToken)
+}
+
+func (c *Client) SendMessageContext(ctx context.Context, user config.UserConfig, to string, text string, contextToken string) error {
 	reqData := map[string]interface{}{
 		"msg": map[string]interface{}{
 			"from_user_id":  "",
@@ -202,13 +218,13 @@ func (c *Client) SendMessage(user config.UserConfig, to string, text string, con
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", c.endpoint("/ilink/bot/sendmessage"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint("/ilink/bot/sendmessage"), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	commonHeaders(req, true, user.BotToken)
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := c.httpClient(10 * time.Second)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
@@ -246,7 +262,11 @@ func (c *Client) SendMessage(user config.UserConfig, to string, text string, con
 }
 
 func (c *Client) SendTyping(user config.UserConfig, status int) error {
-	ticket, err := c.GetBotConfig(user)
+	return c.SendTypingContext(context.Background(), user, status)
+}
+
+func (c *Client) SendTypingContext(ctx context.Context, user config.UserConfig, status int) error {
+	ticket, err := c.GetBotConfigContext(ctx, user)
 	if err != nil {
 		return err
 	}
@@ -263,13 +283,13 @@ func (c *Client) SendTyping(user config.UserConfig, status int) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", c.endpoint("/ilink/bot/sendtyping"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint("/ilink/bot/sendtyping"), bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	commonHeaders(req, true, user.BotToken)
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := c.httpClient(10 * time.Second)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
@@ -297,6 +317,10 @@ func (c *Client) SendTyping(user config.UserConfig, status int) error {
 }
 
 func (c *Client) GetBotConfig(user config.UserConfig) (string, error) {
+	return c.GetBotConfigContext(context.Background(), user)
+}
+
+func (c *Client) GetBotConfigContext(ctx context.Context, user config.UserConfig) (string, error) {
 	reqData := map[string]interface{}{
 		"ilink_user_id": user.IlinkUserID,
 		"context_token": user.ContextToken,
@@ -308,13 +332,13 @@ func (c *Client) GetBotConfig(user config.UserConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequest("POST", c.endpoint("/ilink/bot/getconfig"), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint("/ilink/bot/getconfig"), bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
 	commonHeaders(req, true, user.BotToken)
 
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := c.httpClient(10 * time.Second)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -344,6 +368,19 @@ func (c *Client) GetBotConfig(user config.UserConfig) (string, error) {
 
 func (c *Client) endpoint(path string) string {
 	return c.BaseURL + path
+}
+
+func (c *Client) httpClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: c.transport,
+	}
+}
+
+func instrumentedTransport(base http.RoundTripper) http.RoundTripper {
+	return otelhttp.NewTransport(base, otelhttp.WithFilter(func(req *http.Request) bool {
+		return oteltrace.SpanContextFromContext(req.Context()).IsValid()
+	}))
 }
 
 func commonHeaders(req *http.Request, isJSON bool, token string) {

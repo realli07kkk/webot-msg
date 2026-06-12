@@ -10,7 +10,7 @@ import (
 )
 
 type MessageClient interface {
-	SendMessage(user config.UserConfig, to string, text string, contextToken string) error
+	SendMessageContext(ctx context.Context, user config.UserConfig, to string, text string, contextToken string) error
 }
 
 type TextResult struct {
@@ -49,7 +49,7 @@ func sendProtectedText(ctx context.Context, client MessageClient, guard protecti
 		if footer := protectionStatusFooter(reservation); footer != "" {
 			messageText += "\n" + footer
 		}
-		if err := client.SendMessage(user, user.IlinkUserID, messageText, user.ContextToken); err != nil {
+		if err := client.SendMessageContext(ctx, user, user.IlinkUserID, messageText, user.ContextToken); err != nil {
 			if releaseErr := guard.ReleaseNormalSend(ctx, user.BotID); releaseErr != nil {
 				return result, fmt.Errorf("send failed: %w; release protection reservation failed: %v", err, releaseErr)
 			}
@@ -81,7 +81,7 @@ func sendProtectionReminder(ctx context.Context, client MessageClient, guard pro
 	if reminderText == "" || user.IlinkUserID == "" || user.ContextToken == "" {
 		return false, nil
 	}
-	if err := client.SendMessage(user, user.IlinkUserID, reminderText, user.ContextToken); err != nil {
+	if err := client.SendMessageContext(ctx, user, user.IlinkUserID, reminderText, user.ContextToken); err != nil {
 		log.Printf("[Bot: %s] Protection reminder send failed: %v", user.BotID, err)
 		return false, nil
 	}

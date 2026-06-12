@@ -1,20 +1,25 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/app"
 	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/logfile"
 	"github.com/realli07kkk/webot-msg/internal/protection"
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
+	"github.com/realli07kkk/webot-msg/internal/telemetry"
 	"golang.org/x/term"
 )
+
+const telemetryShutdownTimeout = 5 * time.Second
 
 func main() {
 	if len(os.Args[1:]) > 0 {
@@ -53,6 +58,22 @@ func main() {
 	}
 	warnLegacyProtectionSettings(resolved, logWriter != nil)
 
+	shutdownTelemetry, err := telemetry.Setup(context.Background(), telemetryConfig(resolved.Telemetry))
+	if err != nil {
+		fatalStartupError(err, logWriter != nil)
+	}
+	if resolved.Telemetry.Endpoint != "" {
+		log.Printf("Telemetry enabled: endpoint=%s protocol=%s service_name=%s insecure=%t",
+			resolved.Telemetry.Endpoint, resolved.Telemetry.Protocol, resolved.Telemetry.ServiceName, resolved.Telemetry.Insecure)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), telemetryShutdownTimeout)
+		defer cancel()
+		if err := shutdownTelemetry(ctx); err != nil {
+			log.Printf("Telemetry shutdown failed: %v", err)
+		}
+	}()
+
 	guard := protection.NewRuntimeGuard()
 	application := app.New(app.Options{
 		AuthPath:          resolved.Storage.AuthPath,
@@ -82,6 +103,17 @@ func main() {
 			}
 		}
 		fatalStartupError(err, logWriter != nil)
+	}
+}
+
+func telemetryConfig(cfg runtimeconfig.TelemetryConfig) telemetry.Config {
+	return telemetry.Config{
+		Endpoint:           cfg.Endpoint,
+		Protocol:           cfg.Protocol,
+		Insecure:           cfg.Insecure,
+		ServiceName:        cfg.ServiceName,
+		Headers:            cfg.Headers,
+		ResourceAttributes: cfg.ResourceAttributes,
 	}
 }
 
