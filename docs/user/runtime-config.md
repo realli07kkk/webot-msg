@@ -5,7 +5,7 @@ component: 2026-06-10-runtime-toml-config
 status: current
 summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略和 Redis
 tags: [config, cli, control-console, autocomplete, logging, protection, redis]
-last_reviewed: 2026-06-11
+last_reviewed: 2026-06-12
 ---
 
 # 运行配置说明
@@ -14,7 +14,7 @@ last_reviewed: 2026-06-11
 
 `webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限和 Redis 连接。
 
-如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。CLI 不再提供启动参数覆盖入口；要调整端口、auth store 或 control socket，请修改默认 TOML 后重启服务。
+如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。CLI 不再提供启动参数覆盖入口；要调整端口、auth store 或 control socket，请修改默认 TOML 后重启服务。无参运行 `webot-msg` 时，如果配置里的 control socket 已有运行中服务，程序会直接接入该控制台；没有可用 socket 时才启动新的前台 service。
 
 ## 前置条件
 
@@ -55,7 +55,7 @@ password = ""
 key_prefix = "webot-msg"
 ```
 
-3. 启动服务：
+3. 启动或接入服务：
 
 ```bash
 go run ./cmd/webot-msg
@@ -72,6 +72,8 @@ go run ./cmd/webot-msg
 ```bash
 webot-msg
 ```
+
+如果对应 control socket 已有运行中服务，以上命令会接入已有服务的控制台；如果没有可用服务，则启动新的前台 service。
 
 4. 调整端口或路径时，修改 `~/.webot-msg/config/webot-msg.toml` 后重启服务。`webot-msg` 只接受无参启动，配置路径固定为默认路径。
 
@@ -175,7 +177,13 @@ A: 当前 CLI 不支持临时端口覆盖。修改 TOML 的 `api.port` 后重启
 
 Q: systemd 启动后怎么进入控制台？
 
-A: 连接默认配置里的本地 control socket，例如默认路径：
+A: 直接运行同一个用户下的 `webot-msg`。程序会读取默认 TOML，发现配置里的 control socket 已有运行中服务后，接入该服务的控制台，而不是再启动第二个实例：
+
+```bash
+webot-msg
+```
+
+如果需要排查 socket 或使用第三方工具，也可以连接默认配置里的本地 control socket，例如默认路径：
 
 ```bash
 socat - UNIX-CONNECT:"$HOME/.webot-msg/webot-msg.sock"
@@ -183,7 +191,7 @@ socat - UNIX-CONNECT:"$HOME/.webot-msg/webot-msg.sock"
 
 控制台内 `/exit` 或 `/quit` 只退出这次控制台连接，不会停止 systemd 服务。停止服务仍使用 `systemctl stop webot-msg` 或部署脚本的 `stop`。
 
-直接前台运行 service 的交互式 TTY 控制台支持用 Tab 补全已声明命令和固定子命令，例如 `/log<Tab>` 补成 `/login`，`/pro<Tab>` 补成 `/protection `，`/protection st<Tab>` 补成 `/protection status`。该模式下按 Ctrl+C 会保存配置并退出进程，`/exit` 和 `/quit` 仍只关闭 console session。
+直接前台启动 service 或用 `webot-msg` 在 TTY 中接入已有 service 时，控制台支持用 Tab 补全已声明命令和固定子命令，例如 `/log<Tab>` 补成 `/login`，`/pro<Tab>` 补成 `/protection `，`/protection st<Tab>` 补成 `/protection status`。前台 service 模式下按 Ctrl+C 会保存配置并退出进程；接入已有 service 时，`/exit`、`/quit` 或 Ctrl+C 只关闭本次控制台连接。
 
 通过 `socat` / `nc -U` 连接 control socket 时按普通 line mode 输入命令，不提供按键级 Tab 补全。
 

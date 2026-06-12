@@ -3,13 +3,17 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"syscall"
 
 	"github.com/realli07kkk/webot-msg/internal/app"
+	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/logfile"
 	"github.com/realli07kkk/webot-msg/internal/protection"
 	"github.com/realli07kkk/webot-msg/internal/runtimeconfig"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -21,6 +25,12 @@ func main() {
 	resolved, err := buildRuntimeConfig()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if attached, err := attachExistingConsole(resolved.Control.SocketPath); err != nil {
+		log.Fatal(err)
+	} else if attached {
+		return
 	}
 
 	legacyAuthCopied, err := resolved.PrepareStorage()
@@ -66,6 +76,25 @@ func main() {
 	if err := application.Run(resolved.API.Port); err != nil {
 		fatalStartupError(err, logWriter != nil)
 	}
+}
+
+func attachExistingConsole(socketPath string) (bool, error) {
+	attach := control.Attach
+	if term.IsTerminal(int(os.Stdin.Fd())) && term.IsTerminal(int(os.Stdout.Fd())) {
+		attach = func(socketPath string, in io.Reader, out io.Writer) error {
+			return control.AttachInteractive(socketPath, os.Stdin, os.Stdout)
+		}
+	}
+	if err := attach(socketPath, os.Stdin, os.Stdout); err != nil {
+		if errors.Is(err, os.ErrNotExist) ||
+			errors.Is(err, syscall.ECONNREFUSED) ||
+			errors.Is(err, syscall.ENOTSOCK) ||
+			errors.Is(err, syscall.EPROTOTYPE) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func fatalStartupError(err error, alsoPrint bool) {
