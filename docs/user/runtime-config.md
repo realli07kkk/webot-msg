@@ -3,8 +3,8 @@ doc_type: user-guide
 slug: runtime-config
 component: 2026-06-10-runtime-toml-config
 status: current
-summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略和 Redis
-tags: [config, cli, control-console, autocomplete, logging, protection, redis]
+summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略、OpenTelemetry traces 和 Redis
+tags: [config, cli, control-console, autocomplete, logging, telemetry, tracing, protection, redis]
 last_reviewed: 2026-06-12
 ---
 
@@ -12,7 +12,7 @@ last_reviewed: 2026-06-12
 
 ## 功能简介
 
-`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限和 Redis 连接。
+`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限、OpenTelemetry traces 和 Redis 连接。
 
 如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。CLI 不再提供启动参数覆盖入口；要调整端口、auth store 或 control socket，请修改默认 TOML 后重启服务。无参运行 `webot-msg` 时，如果配置里的 control socket 已有运行中服务，程序会直接接入该控制台；没有可用 socket 时才启动新的前台 service。
 
@@ -48,6 +48,16 @@ base_url = "https://ilinkai.weixin.qq.com"
 [log]
 file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
+
+[telemetry]
+endpoint = ""
+protocol = "grpc"
+insecure = false
+service_name = "webot-msg"
+
+[telemetry.resource_attributes]
+
+[telemetry.headers]
 
 [redis]
 url = "redis://localhost:6379/0"
@@ -87,9 +97,35 @@ webot-msg
 | `ilink.base_url` | `https://ilinkai.weixin.qq.com` | 只接受 `http://` 或 `https://` 地址，必须包含 host |
 | `log.file_path` | `~/.webot-msg/logs/webot-msg.log` | 改成标准日志输出文件路径；设为空字符串可以关闭文件日志 |
 | `log.max_size` | `100MB` | 支持 `B`、`KB`、`MB`、`GB`、`TB`，大小写不敏感，例如 `"10MB"`、`"1GB"` |
+| `telemetry.endpoint` | `""` | OTLP 上报目标 `host:port`；留空表示不启用 telemetry，也不发起 OTLP 连接 |
+| `telemetry.protocol` | `grpc` | OTLP exporter 协议，只接受 `grpc` 或 `http` |
+| `telemetry.insecure` | `false` | 设为 `true` 时使用明文连接，通常只用于本地 collector 调试 |
+| `telemetry.service_name` | `webot-msg` | 上报 resource 的 `service.name` |
+| `telemetry.resource_attributes` | `{}` | 自由 map；例如腾讯云 APM 的 token 可放在这里 |
+| `telemetry.headers` | `{}` | 自由 map；需要 header 认证的 OTLP endpoint 可放在这里 |
 | `redis.url` | `""`（部署脚本示例写 `redis://localhost:6379/0`） | Redis 地址和 DB；执行 `/protection enable` 时不能为空，推荐不在 URL 中写密码 |
 | `redis.password` | `""` | Redis 认证密码；如果 `redis.url` 已自带 password，本字段也非空会在执行 `/protection enable` 时失败 |
 | `redis.key_prefix` | `webot-msg` | Redis key 前缀；不同环境共用同一个 Redis 时建议改成不同值 |
+
+## OpenTelemetry traces
+
+Telemetry 默认关闭。只有 `telemetry.endpoint` 非空时，程序才会初始化 OpenTelemetry SDK，把本地 API 入站请求和由该请求触发的 iLink 出站调用经 OTLP 上报。
+
+示例：
+
+```toml
+[telemetry]
+endpoint = "ap-guangzhou.apm.tencentcs.com:4317"
+protocol = "grpc"
+insecure = false
+service_name = "webot-msg"
+
+[telemetry.resource_attributes]
+token = "your-apm-token"
+env = "prod"
+```
+
+配置只走 TOML。即使进程环境里存在 `OTEL_EXPORTER_OTLP*`，本项目也不会把它们作为 telemetry 配置入口。上报失败不会改变 API 发送请求的业务返回。
 
 ## 发送保护模式
 
@@ -145,6 +181,7 @@ webot-msg
 - 默认 auth store 目录和文件会按 owner-only 权限创建。
 - 自定义 `storage.auth_path` 时，建议仍放在当前用户私有目录下。
 - Runtime config 可以提交模板，但不要把真实凭据写进去，尤其不要提交真实 `redis.password`。
+- `telemetry.headers` 和 `telemetry.resource_attributes` 可能包含 APM 鉴权信息，真实值只应保存在部署机器本地。
 
 ## 常见问题
 

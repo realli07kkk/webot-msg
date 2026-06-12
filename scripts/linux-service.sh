@@ -215,7 +215,15 @@ file_path = "~/.webot-msg/logs/webot-msg.log"
 max_size = "100MB"
 EOF
 
-	write_default_redis_config >>"${tmp_config}"
+	{
+		printf '\n'
+		write_default_telemetry_config
+		printf '\n'
+		write_default_redis_config
+	} >>"${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot append default config sections"
+	}
 
 	chmod 0600 "${tmp_config}" || {
 		rm -f "${tmp_config}"
@@ -231,6 +239,20 @@ EOF
 	}
 }
 
+write_default_telemetry_config() {
+	cat <<'EOF'
+[telemetry]
+endpoint = ""
+protocol = "grpc"
+insecure = false
+service_name = "webot-msg"
+
+[telemetry.resource_attributes]
+
+[telemetry.headers]
+EOF
+}
+
 write_default_redis_config() {
 	cat <<'EOF'
 [redis]
@@ -238,6 +260,41 @@ url = "redis://localhost:6379/0"
 password = "redis123456"
 key_prefix = "webot-msg"
 EOF
+}
+
+ensure_telemetry_config_section() {
+	if grep -Eq '^[[:space:]]*\[telemetry(\]|\.)' "${CONFIG_PATH}"; then
+		return
+	fi
+
+	info "config has no [telemetry] section; appending default disabled telemetry config: ${CONFIG_PATH}"
+	local tmp_config
+	tmp_config="$(mktemp "${CONFIG_DIR}/.${SERVICE_NAME}.toml.tmp.XXXXXX")" || fail "cannot create temporary config"
+
+	cp "${CONFIG_PATH}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot copy ${CONFIG_PATH}"
+	}
+	{
+		printf '\n'
+		write_default_telemetry_config
+	} >>"${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot append telemetry config"
+	}
+	chmod 0600 "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chmod temporary config"
+	}
+	chown_if_root "${DEPLOY_USER}:${DEPLOY_GROUP}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chown temporary config"
+	}
+	mv -f "${tmp_config}" "${CONFIG_PATH}" || {
+		rm -f "${tmp_config}"
+		fail "cannot write ${CONFIG_PATH}"
+	}
+	info "default disabled [telemetry] section appended: ${CONFIG_PATH}"
 }
 
 ensure_redis_config_section() {
@@ -369,6 +426,7 @@ cmd_upgrade() {
 		if grep -Eq '^[[:space:]]*\[protection\][[:space:]]*$' "${CONFIG_PATH}"; then
 			info "legacy [protection] section is ignored; configure [redis] and run /protection enable once to enable protection; future restarts restore it automatically"
 		fi
+		ensure_telemetry_config_section
 		ensure_redis_config_section
 	else
 		info "config not found; upgrade does not create ${CONFIG_PATH}"

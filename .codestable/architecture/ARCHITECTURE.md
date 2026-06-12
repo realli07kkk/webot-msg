@@ -45,7 +45,7 @@ implements:
 
 `internal/runtimeconfig` 是启动配置计算层。它先给出内置默认值，再按可选 TOML 覆盖，最后做 `~` 展开、端口范围、BaseURL scheme、control socket path、日志大小、telemetry endpoint/protocol 和未知 key 校验。默认存储根目录是 `~/.webot-msg/`，默认 auth store、日志路径、保护开关状态文件和控制台 socket 分别落在 `config/`、`logs/`、`state/` 和根目录；TOML 只保留 Redis 连接配置和可选 telemetry 配置，不保存保护开关值，也不暴露状态文件路径 key。旧 `[protection]` section 只作兼容解析，不再驱动运行行为。代码锚点：`internal/runtimeconfig/config.go:18`、`internal/runtimeconfig/config.go:38`、`internal/runtimeconfig/config.go:282`。
 
-`scripts/linux-service.sh` 是 Linux/systemd 部署编排入口。`install` 会检查 Linux/systemd、Go、部署用户 home 和 sudo 权限，编译当前源码到 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`，创建部署用户的 `~/.webot-msg/config/` 与 `~/.webot-msg/logs/`，首次写入默认 `webot-msg.toml`，再生成 `/etc/systemd/system/webot-msg.service` 并执行 `systemctl daemon-reload`。`upgrade` 会先用 `systemctl is-active --quiet webot-msg` 记录服务是否 active；active 时先 stop，替换系统 PATH 中的二进制、刷新 systemd unit 并 `daemon-reload` 后再 start；非 active 时只替换二进制并刷新 unit，不主动启动；已有配置缺少 `[redis]` 时会追加默认 Redis section，不覆盖已有字段。`start`、`stop`、`restart`、`status` 子命令透传到 `systemctl`。代码锚点：`scripts/linux-service.sh:261`、`scripts/linux-service.sh:272`、`scripts/linux-service.sh:300`。
+`scripts/linux-service.sh` 是 Linux/systemd 部署编排入口。`install` 会检查 Linux/systemd、Go、部署用户 home 和 sudo 权限，编译当前源码到 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`，创建部署用户的 `~/.webot-msg/config/` 与 `~/.webot-msg/logs/`，首次写入默认 `webot-msg.toml`，再生成 `/etc/systemd/system/webot-msg.service` 并执行 `systemctl daemon-reload`。`upgrade` 会先用 `systemctl is-active --quiet webot-msg` 记录服务是否 active；active 时先 stop，替换系统 PATH 中的二进制、刷新 systemd unit 并 `daemon-reload` 后再 start；非 active 时只替换二进制并刷新 unit，不主动启动；已有配置缺少 `[telemetry]` 或 `[redis]` 时会追加默认关闭 telemetry section 或默认 Redis section，不覆盖已有字段。`start`、`stop`、`restart`、`status` 子命令透传到 `systemctl`。代码锚点：`scripts/linux-service.sh:261`、`scripts/linux-service.sh:272`、`scripts/linux-service.sh:300`。
 
 `internal/logfile` 是标准日志文件输出的轻量大小控制层。传入空日志路径时禁用文件日志；传入路径时以追加方式打开文件，并在下一次写入会超过上限时把当前文件轮转为 `.1`。代码锚点：`internal/logfile/writer.go:17`、`internal/logfile/writer.go:47`、`internal/logfile/writer.go:74`。
 
@@ -77,7 +77,7 @@ implements:
 
 兼容迁移只在使用默认 auth store path 时发生：如果旧 `./config/auth.json` 存在且新 `~/.webot-msg/config/auth.json` 不存在，启动前原样复制一次；如果新文件已存在，旧文件不会覆盖新文件。复制目标文件按 owner-only 权限创建。代码锚点：`internal/runtimeconfig/config.go:248`、`internal/runtimeconfig/config.go:277`。
 
-Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.webot-msg/config/webot-msg.toml`，内容与 Runtime config 默认契约一致；已有 TOML 时不会覆盖既有字段，升级只在缺少 `[redis]` section 时追加默认 Redis 配置；`~/.webot-msg/config/auth.json` 仍由 `config.Store` 管理，不由部署脚本迁移、覆盖或删除。保护开关状态文件由 service 运行时创建，部署脚本不直接写入。代码锚点：`scripts/linux-service.sh:167`。
+Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.webot-msg/config/webot-msg.toml`，内容与 Runtime config 默认契约一致；已有 TOML 时不会覆盖既有字段，升级只在缺少 `[telemetry]` 或 `[redis]` section 时追加默认关闭 telemetry 配置或默认 Redis 配置；`~/.webot-msg/config/auth.json` 仍由 `config.Store` 管理，不由部署脚本迁移、覆盖或删除。保护开关状态文件由 service 运行时创建，部署脚本不直接写入。代码锚点：`scripts/linux-service.sh:167`。
 
 ## 4. 关键决策
 
@@ -148,7 +148,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - Tab 补全只在本地 stdin/stdout 都是 TTY 的前台 console 或无参 `webot-msg` 第一方 attach 路径下工作；非 TTY stdin 和手工使用 `nc -U` / `socat` 直连 control socket 都走 line mode，不支持按键级补全。代码锚点：`cmd/webot-msg/main.go:81`、`internal/console/terminal_reader.go:20`、`internal/control/server.go:57`。
 - Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
 - `webot-msg.service` 使用部署用户运行，`ExecStart` 指向 `/usr/local/bin/webot-msg`；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
-- 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段或删除 `~/.webot-msg/config/auth.json`；升级可能追加缺失的 `[redis]` section。真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
+- 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段或删除 `~/.webot-msg/config/auth.json`；升级可能追加缺失的 `[telemetry]` 或 `[redis]` section，追加的 telemetry endpoint 为空，保持默认关闭。真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
 
 ## 7. 相关文档
 
