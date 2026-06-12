@@ -64,8 +64,15 @@ func main() {
 		TimeCheckInterval:   resolved.Protection.TimeCheckIntervalDuration,
 	})
 	if err := application.Run(resolved.API.Port); err != nil {
-		log.Fatal(err)
+		fatalStartupError(err, logWriter != nil)
 	}
+}
+
+func fatalStartupError(err error, alsoPrint bool) {
+	if alsoPrint {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	log.Fatal(err)
 }
 
 func warnLegacyProtectionSettings(cfg runtimeconfig.Config, alsoPrint bool) {

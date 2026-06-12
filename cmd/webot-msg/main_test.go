@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,6 +78,60 @@ func TestMainRejectsArguments(t *testing.T) {
 				t.Fatalf("stderr = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestMainPrintsStartupErrorToStderrWithFileLogging(t *testing.T) {
+	if os.Getenv("WEBOT_MSG_TEST_RUN_MAIN") == "1" {
+		os.Args = []string{"webot-msg"}
+		main()
+		return
+	}
+
+	home, err := os.MkdirTemp("/tmp", "webot-msg-main-*")
+	if err != nil {
+		t.Fatalf("create temp home: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(home)
+	})
+	configDir := filepath.Join(home, ".webot-msg", "config")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	authPath := filepath.Join(configDir, "auth.json")
+	authJSON := `{"bots":{"bot-1":{"bot_token":"token-1","bot_id":"bot-1","ilink_user_id":"user-1","context_token":"ctx-1","api_token":"api-1"}}}`
+	if err := os.WriteFile(authPath, []byte(authJSON), 0600); err != nil {
+		t.Fatalf("write auth store: %v", err)
+	}
+
+	socketPath := filepath.Join(home, ".webot-msg", "webot-msg.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix socket: %v", err)
+	}
+	defer listener.Close()
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestMainPrintsStartupErrorToStderrWithFileLogging")
+	cmd.Env = append(os.Environ(), "WEBOT_MSG_TEST_RUN_MAIN=1", "HOME="+home)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("main() error = %v, want exit error", err)
+	}
+	if exitErr.ExitCode() != 1 {
+		t.Fatalf("exit code = %d, want 1", exitErr.ExitCode())
+	}
+	if !strings.Contains(stdout.String(), "Loaded 1 bots.") {
+		t.Fatalf("stdout = %q, want loaded bots message", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "start control console failed: control socket already in use") {
+		t.Fatalf("stderr = %q, want startup error", stderr.String())
 	}
 }
 
