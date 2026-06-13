@@ -2,10 +2,10 @@
 doc_type: architecture
 slug: architecture-overview
 scope: webot-msg 当前 CLI/API 服务整体结构
-summary: CLI 以无参入口接入已有控制台或启动本地应用，由 app 编排配置、iLink 客户端、HTTP API、可选 OpenTelemetry traces、带 Tab 补全的控制台、每个 bot 的消息监听、可自动恢复的 Redis 发送保护和 Linux systemd 部署脚本。
+summary: CLI 以无参入口接入已有控制台或启动本地应用，由 app 编排配置、iLink 客户端、HTTP API、可选 OpenTelemetry traces、带 Tab 补全的控制台、每个 bot 的消息监听、可自动恢复的 Redis 发送保护、每条普通文本拼接 uuid v7 消息 ID 与可开关可持久化的 Redis 发送审计，以及 Linux systemd 部署脚本。
 status: current
-last_reviewed: 2026-06-12
-tags: [go, cli, api, bot, config, logging, telemetry, tracing, observability, opentelemetry, deploy, systemd, console, autocomplete, protection, redis, state]
+last_reviewed: 2026-06-13
+tags: [go, cli, api, bot, config, logging, telemetry, tracing, observability, opentelemetry, deploy, systemd, console, autocomplete, protection, redis, state, audit, uuid]
 depends_on: []
 implements:
   - bot-message-bridge
@@ -32,6 +32,10 @@ implements:
 - 保护开关状态文件：`~/.webot-msg/state/protection.json`，由 service 进程在 `/protection enable` 成功后写入开启、在 `/protection disable` 后写入关闭，只保存 `protection_enabled` 布尔值；文件格式由 `internal/protection.StateStore` 管理。代码锚点：`internal/protection/state_store.go:16`、`internal/protection/state_store.go:28`、`internal/protection/state_store.go:44`。
 - Redis 保护状态：保护模式开启时按 bot 存在 Redis 中的状态，包含下发计数、冻结原因、提醒状态和主动对话 TTL；规则全局共用，状态按 botID 隔离。代码锚点：`internal/protection/redis_guard.go:94`、`internal/protection/redis_guard.go:156`。
 - 冻结状态：保护模式已进入提醒 / 拒绝阶段后，HTTP API 和控制台普通文本发送都会被拒绝，直到下一次微信 App 主动消息触发 `RecordActiveConversation` 重置。代码锚点：`internal/api/server.go:121`、`internal/app/app.go:408`。
+- 消息 ID：每条普通文本发送时用 `uuid.NewV7()` 生成、无条件拼接在发往微信正文最底部的唯一标识，也是审计两个 key 的关联键；与审计开关无关，生成失败时 fail open 跳过 ID 与审计、消息仍投递。HTTP API 响应不返回该 ID。代码锚点：`internal/sender/protected_text.go:94`。
+- 审计能力（Audit）：初始默认关闭、由本地控制台 `/audit enable|disable|status` 运行期控制、开关状态本地持久化的发送审计；开启后每条普通文本成功发送会按消息 ID 向 Redis 写入「发送时间」和「完全体正文」两个 key。审计写失败 fail open，不影响消息投递；只作用于普通文本成功发送，不含保护提醒和 typing。代码锚点：`internal/console/console.go:158`、`internal/audit/audit.go:118`、`internal/sender/protected_text.go:104`。
+- 审计 Redis key：`{prefix}:audit:time:{id}`（发送时间 Unix 毫秒）和 `{prefix}:audit:body:{id}`（完全体正文），`{prefix}` 复用 `[redis].key_prefix`，TTL 各取 `[audit].time_ttl`/`body_ttl`（默认 24h）。代码锚点：`internal/audit/audit.go:172`。
+- 审计开关状态文件：`~/.webot-msg/state/audit.json`，只存 `audit_enabled` 布尔值，与 `protection.json` 并列、机制一致；由 service 运行时创建，部署脚本不写入。代码锚点：`internal/audit/state_store.go:16`、`internal/app/app.go:417`。
 - Linux deploy script：仓库内的 Linux/systemd 编译部署入口，负责编译 `bin/webot-msg`、安装 `/usr/local/bin/webot-msg`、首次写入默认 Runtime config、安装 `webot-msg.service`、升级时按原运行状态 stop/start。代码锚点：`scripts/linux-service.sh:1`。
 - Service unit：Linux deploy script 生成的 systemd unit，固定名为 `webot-msg.service`，用 `ExecStart=/usr/local/bin/webot-msg` 启动服务；程序固定读取运行用户的 `~/.webot-msg/config/webot-msg.toml`。代码锚点：`scripts/linux-service.sh:206`。
 
@@ -53,7 +57,9 @@ implements:
 
 `internal/app` 是编排层，持有配置仓库、iLink 客户端、control socket path、运行期保护 guard、保护开关状态 store 和正在运行的监听 / 保护检查协程集合。它负责启动时加载配置、读取保护开关状态并在记录为开启时尝试一次恢复、交互终端下必要时扫码登录、补齐 API token、启动 control console、启动监听、启动 HTTP API，再进入控制台循环；非交互 stdin 下不会自动扫码阻塞 service。控制台 `/protection enable` 会按 Runtime config 中的 Redis 配置创建 Redis guard、为已登录 bot 启动时间窗口检查器并写入开启状态，`/protection disable` 会切回 no-op guard、取消检查器并写入关闭状态，`/protection status` 查询当前 active bot 的剩余额度。代码锚点：`internal/app/app.go:34`、`internal/app/app.go:97`、`internal/app/app.go:216`、`internal/app/app.go:234`。
 
-`internal/sender` 是普通文本发送编排层。它把“Redis 保护预留、按预留快照追加保护状态行、iLink 普通文本发送、发送失败释放预留、必要时发送保护提醒并记录提醒”收敛成一个入口，供 HTTP API 和控制台共同调用；保护关闭或快照缺失时正文保持原样，保护提醒不递归走普通文本 guard，也不追加状态行。代码锚点：`internal/sender/protected_text.go:22`、`internal/sender/protected_text.go:47`、`internal/sender/protected_text.go:80`、`internal/sender/status_footer.go:12`。
+`internal/sender` 是普通文本发送编排层。它把“生成 uuid v7 消息 ID、Redis 保护预留、按预留快照追加保护状态行、在正文最底部追加 ID 行、iLink 普通文本发送、发送失败释放预留、发送成功后写审计、必要时发送保护提醒并记录提醒”收敛成一个入口（`SendProtectedTextWithOptions` 注入 ID 生成器与 `audit.Auditor`），供 HTTP API 和控制台共同调用；保护关闭或快照缺失时正文除 ID 行外保持原样，ID 行无条件追加（生成失败 fail open 跳过 ID 与审计），审计仅在普通文本成功发送且 ID 存在后 best-effort 写入，保护提醒和 typing 不带 ID、不追加状态行、不审计。代码锚点：`internal/sender/protected_text.go:37`、`internal/sender/protected_text.go:94`、`internal/sender/protected_text.go:104`、`internal/sender/status_footer.go:12`。
+
+`internal/audit` 是发送审计计算层，默认 `NoopAuditor` 关闭，运行期 `/audit enable` 后由 mutex 保护的 `Recorder` 原子换入 Redis client（复用 `protection.NewRedisClient` 与 `[redis]` 连接）。`Record` 在开启时用一次 pipeline 写发送时间 key 和完全体正文 key、TTL 各取 `[audit]` 配置；写失败只返回 error 交由 sender 记日志（fail open）。仅当 ctx 已有有效 span 时为写入起一个 `audit.record` span（镜像 iLink 出站 filter），span 属性不含正文、BotID、密码。`StateStore` 管理审计开关状态文件，语义与 `protection.StateStore` 一致。代码锚点：`internal/audit/audit.go:48`、`internal/audit/audit.go:118`、`internal/audit/audit.go:180`、`internal/audit/state_store.go:20`。
 
 `internal/protection` 是保护状态计算层。`RuntimeGuard` 是进程内运行期开关，默认让新操作走 `NoopGuard` 保持原行为，启用后让新操作绑定当前 Redis guard generation；运行期 disable 只阻止新保护操作，已开始的保护发送事务继续使用同一 generation 完成 release/record 后再关闭 Redis client。`StateStore` 管理本地保护开关状态文件，文件不存在视为关闭，非法 JSON 返回错误由 app 告警后继续，保存使用临时文件和 rename 原子替换。Redis 实现使用 `github.com/redis/go-redis/v9`，通过 Lua 脚本原子处理普通发送预留、预留释放、提醒记录、主动对话重置和 24h TTL 检查，并提供只读状态查询给控制台 status；普通发送预留成功时，同一次 Lua 调用还会返回本次发送计入后的剩余额度和 active TTL 快照给 sender 拼装状态行。代码锚点：`internal/protection/runtime_guard.go:10`、`internal/protection/state_store.go:20`、`internal/protection/redis_guard.go:29`、`internal/protection/redis_guard.go:64`、`internal/protection/redis_guard.go:210`。
 
@@ -71,6 +77,8 @@ implements:
 
 保护开关状态持久化在 `~/.webot-msg/state/protection.json`，不写入 Runtime config、auth store 或 Redis。该文件只保存 `protection_enabled` 布尔值；service 启动时读取它，记录为开启时尝试一次运行期 enable，成功后保护开启，失败则记录告警并保持关闭且不改写文件。保护计数和冻结状态的 source of truth 仍是 Redis。每个 bot 使用 `{prefix}:protect:{<botID>}:state` Hash 保存 `out_count`、`frozen`、`reason`、`reminder_pending`、`reminder_sent_ms` 和 `last_active_ms`，使用 `{prefix}:protect:{<botID>}:active` String 的 TTL 表达 24h 主动对话窗口；key 中的 `{botID}` hash tag 让同一 bot 的多 key Lua 操作在 Redis Cluster 下落同一 slot。代码锚点：`internal/app/app.go:257`、`internal/protection/state_store.go:16`、`internal/protection/redis_guard.go:117`、`internal/protection/redis_guard.go:190`。
 
+审计开关状态持久化在 `~/.webot-msg/state/audit.json`，只保存 `audit_enabled` 布尔值，与保护状态文件并列、不进入 Runtime config / auth store / Redis；service 启动时读取它，记录为开启时尝试一次运行期 enable，Redis 不可用则告警、保持关闭且不改写文件（修复后手动 `/audit enable`，Redis 恢复不自动开启）。审计内容的 source of truth 是 Redis：按消息 ID 写 `{prefix}:audit:time:{id}`（发送时间 Unix 毫秒、TTL=`[audit].time_ttl`）和 `{prefix}:audit:body:{id}`（完全体正文、TTL=`[audit].body_ttl`，默认均 24h），与保护 key 同前缀但 `audit` 段独立，不按 bot 隔离（按消息 ID 唯一）。Runtime config 的 `[audit]` 只含 TTL，审计 Redis 连接复用 `[redis]`。代码锚点：`internal/audit/state_store.go:16`、`internal/audit/audit.go:134`、`internal/runtimeconfig/config.go:338`。
+
 `UserConfig` 是核心持久化结构。`BotToken` 用于调用 iLink，`APIToken` 用于保护本地 HTTP API，`GetUpdatesBuf` 是拉取更新的游标，`IlinkUserID` 与 `ContextToken` 是回复最近会话的上下文。代码锚点：`internal/config/store.go:21`。
 
 监听状态按 bot 分协程运行，`runningMonitors` 防止同一个 bot 重复启动监听。每次拉取更新后，app 将更新游标和新的 context token 写回 Store，再打印消息内容；如果更新中包含带 `from_user_id` 和 `context_token` 的主动消息，会同步重置该 bot 的 Redis 保护状态和 24h TTL。代码锚点：`internal/app/app.go:268`、`internal/app/app.go:379`、`internal/app/app.go:408`。
@@ -85,7 +93,7 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - 默认本地存储统一收敛到 `~/.webot-msg/`：固定 Runtime config 路径是 `~/.webot-msg/config/webot-msg.toml`，默认 auth store 使用 `~/.webot-msg/config/auth.json`，默认标准日志使用 `~/.webot-msg/logs/webot-msg.log`，默认保护开关状态文件使用 `~/.webot-msg/state/protection.json`，默认 control socket 使用 `~/.webot-msg/webot-msg.sock`；TOML 内部的 auth / log / socket 路径配置仍可指向其他位置，保护开关状态文件路径固定不暴露配置项。
 - 配置入口保持克制：本项目固定读取 `~/.webot-msg/config/webot-msg.toml`，不提供 CLI flag、子命令或环境变量配置入口；API 端口只能通过 TOML `api.port` 或内置默认值决定。
 - Telemetry 默认关闭且 TOML-only：`[telemetry]` 缺失或 endpoint 为空时不创建 exporter、不发起 OTLP 连接；启用后只按 TOML 字段决定 endpoint、protocol、headers、resource attributes 和 insecure，官方 exporter 支持的 `OTEL_EXPORTER_OTLP*` 环境变量必须被屏蔽，不能成为第二配置源。
-- Telemetry 只做 traces，首期只覆盖 API 入站和 iLink 出站：不引入 metrics/logs exporter，不做控制台、Redis 保护或后台长轮询的手工 span，不提供采样率配置，不引入厂商私有 SDK。
+- Telemetry 只做 traces，主要覆盖 API 入站和 iLink 出站：不引入 metrics/logs exporter，不做控制台、Redis 保护或后台长轮询的手工 span，不提供采样率配置，不引入厂商私有 SDK。唯一例外是审计 Redis 写：`audit.Record` 在 ctx 已有有效 span 时手工起一个 `audit.record` span，仍遵守“无入站 span 不产生 root span”（控制台触发的审计写不追踪），不引入 `redisotel`。
 - Telemetry 启动错误快速失败，导出错误不改变业务响应：配置非法或 exporter 初始化失败走启动失败；运行期 endpoint 不可达只表现为异步导出失败，不阻塞 API 发送链路。
 - systemd 交互通过本地 Unix socket，不尝试 attach systemd service 的 stdin，也不通过再启动第二个服务实例进入控制台；无参 `webot-msg` 在 socket 可连接时作为第一方 client 接入已有 service，`nc -U` / `socat` 等本地 socket 客户端保留为兼容入口。
 - 控制台补全只来源于静态命令表：Tab 补全覆盖已声明顶层命令和固定子命令，不补全 bot 序号、botID、文件路径、Redis 配置、历史消息或普通文本；补全本身不触发 Controller 调用。
@@ -99,6 +107,11 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - 保护提醒也算下发消息：提醒真实调用 iLink `sendmessage`，发送成功后必须写入 `out_count`，否则系统计数会比微信侧少。
 - 受保护发送事务绑定同一 guard generation：`ReserveNormalSend -> iLink SendMessage -> ReleaseNormalSend/RecordReminderSend` 不能被运行期 disable 切成不同 delegate；disable 只能影响新事务。
 - 保护状态行只在保护开启且普通文本预留成功时追加到真实发送正文；HTTP API 请求 / 响应 JSON 契约保持不变，`/bots/{botID}/typing` 和保护提醒消息不追加状态行。状态行数据必须来自同一次 Redis 预留 Lua 返回的快照，禁止在 sender 中用 `ProtectionStatus` 做预留后的二次查询。代码锚点：`internal/sender/protected_text.go:47`、`internal/sender/status_footer.go:12`、`internal/protection/redis_guard.go:210`。
+- 消息 ID 无条件拼接且是有意的用户可见正文变化：每条普通文本发送都在正文最底部追加一行 uuid v7，与审计开关解耦，无运行期开关；自动化接收方依赖旧正文精确匹配时需在消费端容忍或剥离末行 uuid v7。HTTP API 请求/响应 JSON 契约不变，ID 不进响应体；ID 生成失败 fail open（跳过 ID 与审计、消息仍投递）。
+- 审计 fail open、保护 fail closed：审计写失败（含 Redis 不可达）只记日志、不挡发送，是观测附加项；这与保护的 fail closed 相反，是两者的核心区别。
+- 审计运行期开关 + 本地持久化 + 启动一次性恢复：与保护对称，`/audit enable|disable` 落 `audit.json`，启动尝试一次恢复，Redis 不可用保持关闭且不改写文件；开关状态不进 TOML。
+- 审计复用 `[redis]` 连接、key 带 `key_prefix` 命名空间：不为审计单独配 Redis；用 `{prefix}:audit:time|body:{id}` 避免裸 UUID 污染共享 Redis。审计与保护互不影响，可独立开关。
+- 审计 `Recorder` 不复用保护的 generation/refcount：审计写是单步 fire-and-forget，无跨步事务，mutex 原子换 client 即可，避免过度设计。
 
 ## 5. 代码锚点
 
@@ -107,7 +120,9 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - `internal/telemetry/telemetry.go:Setup` — OpenTelemetry traces 初始化入口，负责 OTLP exporter、resource、全局 TracerProvider、TraceContext propagator、env 屏蔽和 shutdown。
 - `internal/logfile/writer.go:SizeWriter` — 标准日志文件输出和简单大小轮转。
 - `internal/app/app.go:App.Run` — 启动编排主流程。
-- `internal/sender/protected_text.go:SendProtectedText` — 普通文本发送的保护编排入口。
+- `internal/sender/protected_text.go:SendProtectedTextWithOptions` — 普通文本发送编排入口，注入 ID 生成器与 Auditor，负责拼接 ID 行和发送成功后写审计。
+- `internal/audit/audit.go:Recorder` — 运行期审计开关与 Redis 双 key 写入、按需 `audit.record` span。
+- `internal/audit/state_store.go:StateStore` — 审计开关状态文件读写，语义同保护状态文件。
 - `internal/protection/guard.go:Guard` — 保护服务接口和 no-op 实现。
 - `internal/protection/state_store.go:StateStore` — 保护开关状态文件读写，负责缺失 / 损坏语义和原子保存。
 - `internal/protection/redis_guard.go:RedisGuard` — Redis 保护状态、per-bot key 和 Lua 状态机。
@@ -148,12 +163,15 @@ Linux deploy script 首次安装时会写入默认 Runtime config 文件 `~/.web
 - Tab 补全只在本地 stdin/stdout 都是 TTY 的前台 console 或无参 `webot-msg` 第一方 attach 路径下工作；非 TTY stdin 和手工使用 `nc -U` / `socat` 直连 control socket 都走 line mode，不支持按键级补全。代码锚点：`cmd/webot-msg/main.go:81`、`internal/console/terminal_reader.go:20`、`internal/control/server.go:57`。
 - Linux deploy script 只面向 Linux/systemd 单实例部署；它会拒绝非 Linux 或未运行 systemd 的环境。代码锚点：`scripts/linux-service.sh:47`。
 - `webot-msg.service` 使用部署用户运行，`ExecStart` 指向 `/usr/local/bin/webot-msg`；脚本拒绝写入包含空白字符的 systemd 路径，避免 unit 解析歧义。代码锚点：`scripts/linux-service.sh:116`、`scripts/linux-service.sh:206`。
-- 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段或删除 `~/.webot-msg/config/auth.json`；升级可能追加缺失的 `[telemetry]` 或 `[redis]` section，追加的 telemetry endpoint 为空，保持默认关闭。真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
+- 部署脚本不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段或删除 `~/.webot-msg/config/auth.json`；升级可能追加缺失的 `[telemetry]`、`[redis]` 或 `[audit]` section，追加的 telemetry endpoint 为空、audit TTL 取默认 24h，保持默认关闭。真实 Linux systemd 主机上的服务操作仍需要部署者具备 sudo 权限。代码锚点：`scripts/linux-service.sh:65`、`scripts/linux-service.sh:167`。
+- 消息 ID 与审计只作用于普通文本成功发送：保护提醒、typing、保护拒绝和 reminder-only 路径不带 ID、不审计；ID 生成失败与审计写失败都 fail open，不阻断消息投递。`[audit]` 为可选 section，缺失时回退默认 24h，旧配置不会因严格 TOML 失败。代码锚点：`internal/sender/protected_text.go:87`、`internal/audit/audit.go:118`。
+- 审计开关启动恢复只尝试一次：`audit.json` 记录为开启但 Redis 不可用时，服务继续启动、审计保持关闭、状态文件不改写，需修复 Redis 后手动 `/audit enable`；`audit:body` key 保存完整发送正文，敏感数据保留期由 `[audit].body_ttl` 控制。代码锚点：`internal/app/app.go:417`、`internal/audit/audit.go:134`。
 
 ## 7. 相关文档
 
 - `.codestable/requirements/bot-message-bridge.md` — 当前用户可感能力描述。
 - `.codestable/requirements/service-observability.md` — traces / APM 可观测能力描述。
 - `docs/user/linux-systemd-deploy.md` — Linux systemd 安装、升级和服务控制说明。
+- `docs/user/runtime-config.md` — Runtime config（含 `[audit]` TTL）、消息 ID 与发送审计使用说明。
 - `.codestable/requirements/VISION.md` — requirement 索引。
 - `.codestable/attention.md` — CodeStable 技能启动必读的项目注意事项入口。

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/api"
+	"github.com/realli07kkk/webot-msg/internal/audit"
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/console"
 	"github.com/realli07kkk/webot-msg/internal/control"
@@ -40,6 +41,10 @@ type Options struct {
 	ProtectionConfig    protection.EnableConfig
 	ProtectionEnabled   bool
 	ProtectionStatePath string
+	Auditor             *audit.Recorder
+	AuditConfig         audit.EnableConfig
+	AuditStatePath      string
+	IDGenerator         sender.IDGenerator
 	ReminderText        string
 	TimeCheckInterval   time.Duration
 }
@@ -53,6 +58,10 @@ type App struct {
 	protectionConfig     protection.EnableConfig
 	protectionEnabled    bool
 	protectionStateStore *protection.StateStore
+	auditor              *audit.Recorder
+	auditConfig          audit.EnableConfig
+	auditStateStore      *audit.StateStore
+	idGenerator          sender.IDGenerator
 	reminderText         string
 	timeCheckInterval    time.Duration
 
@@ -74,9 +83,17 @@ func New(opts Options) *App {
 	if opts.TimeCheckInterval <= 0 {
 		opts.TimeCheckInterval = time.Minute
 	}
+	auditor := opts.Auditor
+	if auditor == nil {
+		auditor = audit.NewRecorder()
+	}
 	var protectionStateStore *protection.StateStore
 	if opts.ProtectionStatePath != "" {
 		protectionStateStore = protection.NewStateStore(opts.ProtectionStatePath)
+	}
+	var auditStateStore *audit.StateStore
+	if opts.AuditStatePath != "" {
+		auditStateStore = audit.NewStateStore(opts.AuditStatePath)
 	}
 	return &App{
 		store:                     config.NewStore(opts.AuthPath),
@@ -87,6 +104,10 @@ func New(opts Options) *App {
 		protectionConfig:          opts.ProtectionConfig,
 		protectionEnabled:         opts.ProtectionEnabled,
 		protectionStateStore:      protectionStateStore,
+		auditor:                   auditor,
+		auditConfig:               opts.AuditConfig,
+		auditStateStore:           auditStateStore,
+		idGenerator:               opts.IDGenerator,
 		reminderText:              opts.ReminderText,
 		timeCheckInterval:         opts.TimeCheckInterval,
 		runningMonitors:           make(map[string]struct{}),
@@ -107,6 +128,7 @@ func (a *App) Run(port int) error {
 		restoreWarnings = os.Stderr
 	}
 	a.restoreProtectionState(restoreWarnings)
+	a.restoreAuditState(restoreWarnings)
 
 	if a.store.Count() == 0 {
 		if isTerminal(os.Stdin) {
@@ -141,7 +163,10 @@ func (a *App) Run(port int) error {
 		a.startMonitor(botID)
 	}
 
-	apiServer := api.NewServerWithClient(a.store, a.client, a.guard, a.reminderText)
+	apiServer := api.NewServerWithClientOptions(a.store, a.client, a.guard, a.reminderText, sender.TextOptions{
+		IDGenerator: a.idGenerator,
+		Auditor:     a.auditor,
+	})
 	go func() {
 		if err := apiServer.Start(port); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("API server stopped: %v", err)
@@ -347,6 +372,98 @@ func (a *App) printProtectionStatus(status protection.Status, out io.Writer) {
 	}
 }
 
+func (a *App) EnableAudit(out io.Writer) error {
+	if a.auditor == nil {
+		return errors.New("runtime audit recorder is not available")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.auditor.Enable(ctx, a.auditConfig); err != nil {
+		return err
+	}
+	if err := a.persistAuditState(true); err != nil {
+		message := fmt.Sprintf("audit enabled for current process, but persist audit state failed; restart will not restore audit automatically: %v", err)
+		log.Print(message)
+		return errors.New(message)
+	}
+	fmt.Fprintf(out, "Audit enabled. Redis key prefix: %s\n", a.auditConfig.KeyPrefix)
+	return nil
+}
+
+func (a *App) DisableAudit(out io.Writer) error {
+	if a.auditor == nil {
+		return errors.New("runtime audit recorder is not available")
+	}
+	a.auditor.Disable()
+	if err := a.persistAuditState(false); err != nil {
+		message := fmt.Sprintf("audit disabled for current process, but persist audit state failed; restart may restore audit automatically: %v", err)
+		log.Print(message)
+		return errors.New(message)
+	}
+	fmt.Fprintln(out, "Audit disabled.")
+	return nil
+}
+
+func (a *App) persistAuditState(enabled bool) error {
+	if a.auditStateStore == nil {
+		return nil
+	}
+	if err := a.auditStateStore.Save(audit.PersistedState{AuditEnabled: enabled}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *App) restoreAuditState(warnOut io.Writer) {
+	if a.auditStateStore == nil {
+		return
+	}
+
+	state, err := a.auditStateStore.Load()
+	if err != nil {
+		a.warnAuditRestore(warnOut, "audit state file is unreadable; starting with audit disabled: %v", err)
+		return
+	}
+	if !state.AuditEnabled {
+		return
+	}
+	if a.auditor == nil {
+		a.warnAuditRestore(warnOut, "audit auto-restore failed; runtime audit recorder is not available")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.auditor.Enable(ctx, a.auditConfig); err != nil {
+		a.warnAuditRestore(warnOut, "audit auto-restore failed; audit remains disabled. Run /audit enable after fixing Redis: %v", err)
+		return
+	}
+	log.Printf("Audit auto-restore succeeded. Redis key prefix: %s", a.auditConfig.KeyPrefix)
+}
+
+func (a *App) warnAuditRestore(out io.Writer, format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	log.Print(message)
+	if out != nil {
+		fmt.Fprintf(out, "Warning: %s\n", message)
+	}
+}
+
+func (a *App) PrintAuditStatus(out io.Writer) {
+	if a.auditor == nil {
+		fmt.Fprintln(out, "Audit status unavailable: runtime audit recorder is not available")
+		return
+	}
+	if a.auditor.Enabled() {
+		fmt.Fprintln(out, "Audit enabled.")
+	} else {
+		fmt.Fprintln(out, "Audit disabled.")
+	}
+	fmt.Fprintf(out, "Redis configured: %s\n", yesNo(strings.TrimSpace(a.auditConfig.RedisURL) != ""))
+	fmt.Fprintf(out, "Time TTL: %s\n", formatStatusDuration(a.auditConfig.TimeTTL))
+	fmt.Fprintf(out, "Body TTL: %s\n", formatStatusDuration(a.auditConfig.BodyTTL))
+}
+
 func (a *App) SendText(botID string, text string) error {
 	user, exists := a.store.GetBot(botID)
 	if !exists {
@@ -357,7 +474,10 @@ func (a *App) SendText(botID string, text string) error {
 		return errors.New("Active user has no message context to reply to. (Wait for one message or context is missing)")
 	}
 
-	_, err := sender.SendProtectedText(context.Background(), a.client, a.protectionGuard(), user, text, a.reminderText)
+	_, err := sender.SendProtectedTextWithOptions(context.Background(), a.client, a.protectionGuard(), user, text, a.reminderText, sender.TextOptions{
+		IDGenerator: a.idGenerator,
+		Auditor:     a.auditor,
+	})
 	if err != nil {
 		if protection.IsRejection(err) {
 			return errors.New(protection.RejectionMessage(protection.RejectionReason(err)))

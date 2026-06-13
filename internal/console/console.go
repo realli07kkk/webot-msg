@@ -26,6 +26,9 @@ type Controller interface {
 	EnableProtection(out io.Writer) error
 	DisableProtection(out io.Writer) error
 	PrintProtectionStatus(activeBotID string, out io.Writer)
+	EnableAudit(out io.Writer) error
+	DisableAudit(out io.Writer) error
+	PrintAuditStatus(out io.Writer)
 	SendText(botID string, text string) error
 }
 
@@ -135,6 +138,11 @@ func RunWithLineReader(controller Controller, reader LineReader, out io.Writer) 
 			continue
 		}
 
+		if text == "/audit" || strings.HasPrefix(text, "/audit ") {
+			handleAuditCommand(text, controller, out)
+			continue
+		}
+
 		if strings.HasPrefix(text, "/") {
 			fmt.Fprintln(out, "Command not recognized, treating as text msg...")
 		}
@@ -144,6 +152,29 @@ func RunWithLineReader(controller Controller, reader LineReader, out io.Writer) 
 		} else {
 			fmt.Fprintln(out, "Send success!")
 		}
+	}
+}
+
+func handleAuditCommand(text string, controller Controller, out io.Writer) {
+	parts := strings.Fields(text)
+	if len(parts) != 2 {
+		fmt.Fprintln(out, auditUsage())
+		return
+	}
+
+	switch parts[1] {
+	case "enable":
+		if err := controller.EnableAudit(out); err != nil {
+			fmt.Fprintf(out, "Enable audit failed: %v\n", err)
+		}
+	case "disable":
+		if err := controller.DisableAudit(out); err != nil {
+			fmt.Fprintf(out, "Disable audit failed: %v\n", err)
+		}
+	case "status":
+		controller.PrintAuditStatus(out)
+	default:
+		fmt.Fprintln(out, auditUsage())
 	}
 }
 

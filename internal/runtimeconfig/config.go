@@ -21,12 +21,14 @@ const (
 	DefaultAuthPath            = "~/.webot-msg/config/auth.json"
 	DefaultControlSocketPath   = "~/.webot-msg/webot-msg.sock"
 	DefaultProtectionStatePath = "~/.webot-msg/state/protection.json"
+	DefaultAuditStatePath      = "~/.webot-msg/state/audit.json"
 	DefaultLogPath             = "~/.webot-msg/logs/webot-msg.log"
 	DefaultLogMaxSize          = "100MB"
 	DefaultRedisKeyPrefix      = "webot-msg"
 	DefaultActiveWindow        = "24h"
 	DefaultTimeWarningBefore   = "30m"
 	DefaultTimeCheckInterval   = "1m"
+	DefaultAuditTTL            = "24h"
 	DefaultReminderText        = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
 	DefaultTelemetryProtocol   = "grpc"
 	DefaultTelemetryService    = "webot-msg"
@@ -42,6 +44,8 @@ type Config struct {
 	Ilink               IlinkConfig            `toml:"ilink"`
 	Log                 LogConfig              `toml:"log"`
 	Telemetry           TelemetryConfig        `toml:"telemetry"`
+	Audit               AuditConfig            `toml:"audit"`
+	AuditStatePath      string                 `toml:"-"`
 	Protection          ProtectionConfig       `toml:"-"`
 	ProtectionStatePath string                 `toml:"-"`
 	LegacyProtection    LegacyProtectionConfig `toml:"protection"`
@@ -77,6 +81,13 @@ type TelemetryConfig struct {
 	ServiceName        string            `toml:"service_name"`
 	Headers            map[string]string `toml:"headers"`
 	ResourceAttributes map[string]string `toml:"resource_attributes"`
+}
+
+type AuditConfig struct {
+	TimeTTL         string        `toml:"time_ttl"`
+	BodyTTL         string        `toml:"body_ttl"`
+	TimeTTLDuration time.Duration `toml:"-"`
+	BodyTTLDuration time.Duration `toml:"-"`
 }
 
 type ProtectionConfig struct {
@@ -143,6 +154,11 @@ func Default() Config {
 			Headers:            map[string]string{},
 			ResourceAttributes: map[string]string{},
 		},
+		Audit: AuditConfig{
+			TimeTTL: DefaultAuditTTL,
+			BodyTTL: DefaultAuditTTL,
+		},
+		AuditStatePath: DefaultAuditStatePath,
 		Protection: ProtectionConfig{
 			Enabled:                 false,
 			MessageLimit:            10,
@@ -231,6 +247,9 @@ func (c Config) Resolve() (Config, error) {
 	if err := resolveTelemetry(&resolved); err != nil {
 		return Config{}, err
 	}
+	if err := resolveAudit(&resolved); err != nil {
+		return Config{}, err
+	}
 
 	protectionStatePath, err := expandHome(resolved.ProtectionStatePath)
 	if err != nil {
@@ -240,6 +259,15 @@ func (c Config) Resolve() (Config, error) {
 		return Config{}, fmt.Errorf("protection state path: must not be empty")
 	}
 	resolved.ProtectionStatePath = protectionStatePath
+
+	auditStatePath, err := expandHome(resolved.AuditStatePath)
+	if err != nil {
+		return Config{}, fmt.Errorf("audit state path: %w", err)
+	}
+	if auditStatePath == "" {
+		return Config{}, fmt.Errorf("audit state path: must not be empty")
+	}
+	resolved.AuditStatePath = auditStatePath
 
 	return resolved, nil
 }
@@ -304,6 +332,20 @@ func resolveTelemetry(cfg *Config) error {
 	if cfg.Telemetry.ResourceAttributes == nil {
 		cfg.Telemetry.ResourceAttributes = map[string]string{}
 	}
+	return nil
+}
+
+func resolveAudit(cfg *Config) error {
+	timeTTL, err := parsePositiveDuration(cfg.Audit.TimeTTL)
+	if err != nil {
+		return fmt.Errorf("audit.time_ttl: %w", err)
+	}
+	bodyTTL, err := parsePositiveDuration(cfg.Audit.BodyTTL)
+	if err != nil {
+		return fmt.Errorf("audit.body_ttl: %w", err)
+	}
+	cfg.Audit.TimeTTLDuration = timeTTL
+	cfg.Audit.BodyTTLDuration = bodyTTL
 	return nil
 }
 

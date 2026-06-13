@@ -14,6 +14,8 @@ import (
 	"github.com/realli07kkk/webot-msg/internal/protection"
 )
 
+const fixedMessageID = "01890f3e-6f44-7b2c-8d9e-123456789abc"
+
 func TestSendTextSendsReminderAfterNormalSendDecision(t *testing.T) {
 	store := config.NewStore(filepath.Join(t.TempDir(), "auth.json"))
 	if err := store.EnsureDir(); err != nil {
@@ -35,6 +37,7 @@ func TestSendTextSendsReminderAfterNormalSendDecision(t *testing.T) {
 		store:        store,
 		client:       client,
 		guard:        guard,
+		idGenerator:  fixedIDGenerator,
 		reminderText: "reminder",
 	}
 
@@ -44,8 +47,9 @@ func TestSendTextSendsReminderAfterNormalSendDecision(t *testing.T) {
 	if len(client.messages) != 2 {
 		t.Fatalf("sent messages = %#v, want normal + reminder", client.messages)
 	}
-	if client.messages[0] != "hello" || client.messages[1] != "reminder" {
-		t.Fatalf("sent messages = %#v, want [hello reminder]", client.messages)
+	wantNormal := "hello\n" + fixedMessageID
+	if client.messages[0] != wantNormal || client.messages[1] != "reminder" {
+		t.Fatalf("sent messages = %#v, want [%q reminder]", client.messages, wantNormal)
 	}
 	if guard.recordReminderCalls != 1 {
 		t.Fatalf("RecordReminderSend calls = %d, want 1", guard.recordReminderCalls)
@@ -67,8 +71,9 @@ func TestSendTextAppendsStatusFooter(t *testing.T) {
 
 	client := &fakeClient{}
 	a := &App{
-		store:  store,
-		client: client,
+		store:       store,
+		client:      client,
+		idGenerator: fixedIDGenerator,
 		guard: &fakeGuard{
 			reservation: protection.Reservation{
 				Kind:                   protection.ReservationSendNormal,
@@ -83,7 +88,7 @@ func TestSendTextAppendsStatusFooter(t *testing.T) {
 	if err := a.SendText("bot-1", "hello"); err != nil {
 		t.Fatalf("SendText() error = %v", err)
 	}
-	want := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m"
+	want := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m\n" + fixedMessageID
 	if got := client.messages; len(got) != 1 || got[0] != want {
 		t.Fatalf("sent messages = %#v, want [%q]", got, want)
 	}
@@ -143,6 +148,7 @@ func TestSendTextReleasesReservationWhenSendFails(t *testing.T) {
 		store:        store,
 		client:       client,
 		guard:        guard,
+		idGenerator:  fixedIDGenerator,
 		reminderText: "reminder",
 	}
 
@@ -260,6 +266,10 @@ func (f *fakeClient) SendTyping(config.UserConfig, int) error {
 
 func (f *fakeClient) SendTypingContext(context.Context, config.UserConfig, int) error {
 	return nil
+}
+
+func fixedIDGenerator() (string, error) {
+	return fixedMessageID, nil
 }
 
 type fakeGuard struct {

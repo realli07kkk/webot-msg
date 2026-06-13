@@ -67,6 +67,40 @@ func TestLoadFileMergesDefaults(t *testing.T) {
 	if len(cfg.Telemetry.ResourceAttributes) != 0 {
 		t.Fatalf("Telemetry.ResourceAttributes = %#v, want empty default", cfg.Telemetry.ResourceAttributes)
 	}
+	if cfg.Audit.TimeTTL != DefaultAuditTTL {
+		t.Fatalf("Audit.TimeTTL = %q, want %q", cfg.Audit.TimeTTL, DefaultAuditTTL)
+	}
+	if cfg.Audit.BodyTTL != DefaultAuditTTL {
+		t.Fatalf("Audit.BodyTTL = %q, want %q", cfg.Audit.BodyTTL, DefaultAuditTTL)
+	}
+}
+
+func TestLoadFileAcceptsAuditSection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "webot-msg.toml")
+	content := `
+[audit]
+time_ttl = "2h"
+body_ttl = "3h"
+`
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile() error = %v", err)
+	}
+	resolved, err := cfg.Resolve()
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+
+	if resolved.Audit.TimeTTLDuration != 2*time.Hour {
+		t.Fatalf("Audit.TimeTTLDuration = %s, want 2h", resolved.Audit.TimeTTLDuration)
+	}
+	if resolved.Audit.BodyTTLDuration != 3*time.Hour {
+		t.Fatalf("Audit.BodyTTLDuration = %s, want 3h", resolved.Audit.BodyTTLDuration)
+	}
 }
 
 func TestLoadFileAcceptsTelemetrySection(t *testing.T) {
@@ -187,6 +221,9 @@ func TestDefaultConfigPath(t *testing.T) {
 	if DefaultProtectionStatePath != "~/.webot-msg/state/protection.json" {
 		t.Fatalf("DefaultProtectionStatePath = %q", DefaultProtectionStatePath)
 	}
+	if DefaultAuditStatePath != "~/.webot-msg/state/audit.json" {
+		t.Fatalf("DefaultAuditStatePath = %q", DefaultAuditStatePath)
+	}
 }
 
 func TestLoadFileRejectsUnknownKeys(t *testing.T) {
@@ -298,6 +335,10 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	if resolved.ProtectionStatePath != wantProtectionStatePath {
 		t.Fatalf("ProtectionStatePath = %q, want %q", resolved.ProtectionStatePath, wantProtectionStatePath)
 	}
+	wantAuditStatePath := filepath.Join(home, ".webot-msg", "state", "audit.json")
+	if resolved.AuditStatePath != wantAuditStatePath {
+		t.Fatalf("AuditStatePath = %q, want %q", resolved.AuditStatePath, wantAuditStatePath)
+	}
 	if resolved.Log.MaxSizeBytes != 1024*1024*1024 {
 		t.Fatalf("Log.MaxSizeBytes = %d, want %d", resolved.Log.MaxSizeBytes, int64(1024*1024*1024))
 	}
@@ -309,6 +350,12 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	}
 	if resolved.Protection.TimeCheckIntervalDuration != time.Minute {
 		t.Fatalf("Protection.TimeCheckIntervalDuration = %s, want 1m", resolved.Protection.TimeCheckIntervalDuration)
+	}
+	if resolved.Audit.TimeTTLDuration != 24*time.Hour {
+		t.Fatalf("Audit.TimeTTLDuration = %s, want 24h", resolved.Audit.TimeTTLDuration)
+	}
+	if resolved.Audit.BodyTTLDuration != 24*time.Hour {
+		t.Fatalf("Audit.BodyTTLDuration = %s, want 24h", resolved.Audit.BodyTTLDuration)
 	}
 }
 
@@ -558,6 +605,20 @@ func TestResolveRejectsInvalidValues(t *testing.T) {
 				cfg.Protection.ReminderText = ""
 			},
 			wantErr: "protection.reminder_text",
+		},
+		{
+			name: "invalid audit time ttl",
+			update: func(cfg *Config) {
+				cfg.Audit.TimeTTL = "bad"
+			},
+			wantErr: "audit.time_ttl",
+		},
+		{
+			name: "invalid audit body ttl",
+			update: func(cfg *Config) {
+				cfg.Audit.BodyTTL = "0s"
+			},
+			wantErr: "audit.body_ttl",
 		},
 		{
 			name: "home lookup error",

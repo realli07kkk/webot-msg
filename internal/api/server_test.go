@@ -12,7 +12,10 @@ import (
 
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/protection"
+	"github.com/realli07kkk/webot-msg/internal/sender"
 )
+
+const fixedMessageID = "01890f3e-6f44-7b2c-8d9e-123456789abc"
 
 func TestHandleSendMessageSendsReminderAfterNormalSendDecision(t *testing.T) {
 	store := newAPIStore(t)
@@ -20,7 +23,7 @@ func TestHandleSendMessageSendsReminderAfterNormalSendDecision(t *testing.T) {
 	guard := &fakeProtectionGuard{
 		reservation: protection.SendNormalThenReminder(protection.ReasonCount),
 	}
-	server := NewServerWithClient(store, client, guard, "reminder")
+	server := newTestServer(store, client, guard)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
@@ -29,8 +32,9 @@ func TestHandleSendMessageSendsReminderAfterNormalSendDecision(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s, want 200", rr.Code, rr.Body.String())
 	}
-	if got := strings.Join(client.messages, ","); got != "hello,reminder" {
-		t.Fatalf("messages = %q, want hello,reminder", got)
+	wantNormal := "hello\n" + fixedMessageID
+	if got := strings.Join(client.messages, ","); got != wantNormal+",reminder" {
+		t.Fatalf("messages = %q, want %q,reminder", got, wantNormal)
 	}
 	if guard.recordReminderCalls != 1 {
 		t.Fatalf("RecordReminderSend calls = %d, want 1", guard.recordReminderCalls)
@@ -48,7 +52,7 @@ func TestHandleSendMessageAppendsStatusFooterWithoutChangingResponse(t *testing.
 			TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
 		},
 	}
-	server := NewServerWithClient(store, client, guard, "reminder")
+	server := newTestServer(store, client, guard)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
@@ -57,7 +61,7 @@ func TestHandleSendMessageAppendsStatusFooterWithoutChangingResponse(t *testing.
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s, want 200", rr.Code, rr.Body.String())
 	}
-	wantMessage := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m"
+	wantMessage := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m\n" + fixedMessageID
 	if got := client.messages; len(got) != 1 || got[0] != wantMessage {
 		t.Fatalf("messages = %#v, want [%q]", got, wantMessage)
 	}
@@ -80,7 +84,7 @@ func TestHandleSendMessageRejectsFrozenBeforeSendingUserText(t *testing.T) {
 	guard := &fakeProtectionGuard{
 		reservation: protection.RejectNormal(protection.ReasonCount),
 	}
-	server := NewServerWithClient(store, client, guard, "reminder")
+	server := newTestServer(store, client, guard)
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
@@ -143,6 +147,14 @@ func newAPIStore(t *testing.T) *config.Store {
 		t.Fatalf("AddBot() error = %v", err)
 	}
 	return store
+}
+
+func newTestServer(store *config.Store, client messageClient, guard protection.Guard) *Server {
+	return NewServerWithClientOptions(store, client, guard, "reminder", sender.TextOptions{
+		IDGenerator: func() (string, error) {
+			return fixedMessageID, nil
+		},
+	})
 }
 
 type fakeMessageClient struct {

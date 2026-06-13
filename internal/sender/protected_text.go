@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
+	"github.com/google/uuid"
+	"github.com/realli07kkk/webot-msg/internal/audit"
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/protection"
 )
@@ -19,14 +22,49 @@ type TextResult struct {
 	ReminderReason string
 }
 
+type IDGenerator func() (string, error)
+
+type TextOptions struct {
+	IDGenerator IDGenerator
+	Auditor     audit.Auditor
+	Now         func() time.Time
+}
+
 func SendProtectedText(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string) (TextResult, error) {
+	return SendProtectedTextWithOptions(ctx, client, guard, user, text, reminderText, TextOptions{})
+}
+
+func SendProtectedTextWithOptions(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string, opts TextOptions) (TextResult, error) {
 	operation := protection.BeginOperation(guard)
 	defer operation.Done()
 
-	return sendProtectedText(ctx, client, operation, user, text, reminderText)
+	return sendProtectedText(ctx, client, operation, user, text, reminderText, resolveTextOptions(opts))
 }
 
-func sendProtectedText(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string) (TextResult, error) {
+func DefaultIDGenerator() (string, error) {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return "", err
+	}
+	return id.String(), nil
+}
+
+func resolveTextOptions(opts TextOptions) TextOptions {
+	if opts.IDGenerator == nil {
+		opts.IDGenerator = DefaultIDGenerator
+	}
+	if opts.Auditor == nil {
+		opts.Auditor = audit.NoopAuditor{}
+	} else if recorder, ok := opts.Auditor.(*audit.Recorder); ok && recorder == nil {
+		opts.Auditor = audit.NoopAuditor{}
+	}
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	return opts
+}
+
+func sendProtectedText(ctx context.Context, client MessageClient, guard protection.Guard, user config.UserConfig, text string, reminderText string, opts TextOptions) (TextResult, error) {
 	result := TextResult{}
 	reservation, err := guard.ReserveNormalSend(ctx, user.BotID)
 	if err != nil {
@@ -49,6 +87,12 @@ func sendProtectedText(ctx context.Context, client MessageClient, guard protecti
 		if footer := protectionStatusFooter(reservation); footer != "" {
 			messageText += "\n" + footer
 		}
+		messageID, err := opts.IDGenerator()
+		if err != nil {
+			log.Printf("[Bot: %s] Message ID generation failed; audit skipped: %v", user.BotID, err)
+		} else {
+			messageText += "\n" + messageID
+		}
 		if err := client.SendMessageContext(ctx, user, user.IlinkUserID, messageText, user.ContextToken); err != nil {
 			if releaseErr := guard.ReleaseNormalSend(ctx, user.BotID); releaseErr != nil {
 				return result, fmt.Errorf("send failed: %w; release protection reservation failed: %v", err, releaseErr)
@@ -56,6 +100,11 @@ func sendProtectedText(ctx context.Context, client MessageClient, guard protecti
 			return result, fmt.Errorf("send failed: %w", err)
 		}
 		result.NormalSent = true
+		if messageID != "" {
+			if err := opts.Auditor.Record(ctx, audit.RecordInput{ID: messageID, SentAt: opts.Now(), Body: messageText}); err != nil {
+				log.Printf("[Bot: %s] Message audit record failed: %v", user.BotID, err)
+			}
+		}
 		if reservation.Kind == protection.ReservationSendNormalThenReminder {
 			reminderSent, err := sendProtectionReminder(ctx, client, guard, user, reminderText, reservation.Reason)
 			result.ReminderSent = reminderSent

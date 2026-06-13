@@ -29,6 +29,11 @@ var commandSpecs = []CommandSpec{
 		Subcommands: []string{"enable", "disable", "status"},
 	},
 	{
+		Name:        "/audit",
+		Usage:       "/audit enable|disable|status - Control message audit.",
+		Subcommands: []string{"enable", "disable", "status"},
+	},
+	{
 		Name:  "/exit",
 		Usage: "/exit        - Exit this console session.",
 	},
@@ -52,6 +57,13 @@ func protectionUsage() string {
 		return "Usage: " + spec.Name + " " + joinWords(spec.Subcommands, "|")
 	}
 	return "Usage: /protection enable|disable|status"
+}
+
+func auditUsage() string {
+	if spec, ok := findCommandSpec("/audit"); ok {
+		return "Usage: " + spec.Name + " " + joinWords(spec.Subcommands, "|")
+	}
+	return "Usage: /audit enable|disable|status"
 }
 
 func joinWords(words []string, sep string) string {

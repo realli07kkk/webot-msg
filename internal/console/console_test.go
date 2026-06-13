@@ -97,6 +97,28 @@ func TestRunHandlesProtectionCommands(t *testing.T) {
 	}
 }
 
+func TestRunHandlesAuditCommands(t *testing.T) {
+	controller := &fakeController{defaultBotID: "bot-1"}
+
+	got := runWithInput(t, "/audit enable\n/audit status\n/audit disable\n/exit\n", controller)
+
+	if got != ExitReasonCommand {
+		t.Fatalf("Run() = %v, want %v", got, ExitReasonCommand)
+	}
+	if controller.enableAuditCalls != 1 {
+		t.Fatalf("enableAuditCalls = %d, want 1", controller.enableAuditCalls)
+	}
+	if controller.disableAuditCalls != 1 {
+		t.Fatalf("disableAuditCalls = %d, want 1", controller.disableAuditCalls)
+	}
+	if controller.auditStatusCalls != 1 {
+		t.Fatalf("auditStatusCalls = %d, want 1", controller.auditStatusCalls)
+	}
+	if controller.sendTextCalled {
+		t.Fatal("SendText was called for audit commands")
+	}
+}
+
 func TestRunTreatsProtectionPrefixWithoutSeparatorAsText(t *testing.T) {
 	controller := &fakeController{defaultBotID: "bot-1"}
 
@@ -129,6 +151,9 @@ type fakeController struct {
 
 	enableProtectionCalls  int
 	disableProtectionCalls int
+	enableAuditCalls       int
+	disableAuditCalls      int
+	auditStatusCalls       int
 }
 
 type interruptingLineReader struct{}
@@ -175,6 +200,20 @@ func (f *fakeController) DisableProtection(_ io.Writer) error {
 
 func (f *fakeController) PrintProtectionStatus(botID string, _ io.Writer) {
 	f.statusBotIDs = append(f.statusBotIDs, botID)
+}
+
+func (f *fakeController) EnableAudit(_ io.Writer) error {
+	f.enableAuditCalls++
+	return nil
+}
+
+func (f *fakeController) DisableAudit(_ io.Writer) error {
+	f.disableAuditCalls++
+	return nil
+}
+
+func (f *fakeController) PrintAuditStatus(_ io.Writer) {
+	f.auditStatusCalls++
 }
 
 func (f *fakeController) SendText(botID string, _ string) error {

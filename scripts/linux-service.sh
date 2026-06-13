@@ -220,6 +220,8 @@ EOF
 		write_default_telemetry_config
 		printf '\n'
 		write_default_redis_config
+		printf '\n'
+		write_default_audit_config
 	} >>"${tmp_config}" || {
 		rm -f "${tmp_config}"
 		fail "cannot append default config sections"
@@ -259,6 +261,14 @@ write_default_redis_config() {
 url = "redis://localhost:6379/0"
 password = "redis123456"
 key_prefix = "webot-msg"
+EOF
+}
+
+write_default_audit_config() {
+	cat <<'EOF'
+[audit]
+time_ttl = "24h"
+body_ttl = "24h"
 EOF
 }
 
@@ -330,6 +340,41 @@ ensure_redis_config_section() {
 		fail "cannot write ${CONFIG_PATH}"
 	}
 	info "default [redis] section appended: ${CONFIG_PATH}"
+}
+
+ensure_audit_config_section() {
+	if grep -Eq '^[[:space:]]*\[audit\][[:space:]]*$' "${CONFIG_PATH}"; then
+		return
+	fi
+
+	info "config has no [audit] section; appending default audit config: ${CONFIG_PATH}"
+	local tmp_config
+	tmp_config="$(mktemp "${CONFIG_DIR}/.${SERVICE_NAME}.toml.tmp.XXXXXX")" || fail "cannot create temporary config"
+
+	cp "${CONFIG_PATH}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot copy ${CONFIG_PATH}"
+	}
+	{
+		printf '\n'
+		write_default_audit_config
+	} >>"${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot append audit config"
+	}
+	chmod 0600 "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chmod temporary config"
+	}
+	chown_if_root "${DEPLOY_USER}:${DEPLOY_GROUP}" "${tmp_config}" || {
+		rm -f "${tmp_config}"
+		fail "cannot chown temporary config"
+	}
+	mv -f "${tmp_config}" "${CONFIG_PATH}" || {
+		rm -f "${tmp_config}"
+		fail "cannot write ${CONFIG_PATH}"
+	}
+	info "default [audit] section appended: ${CONFIG_PATH}"
 }
 
 write_service_unit() {
@@ -428,6 +473,7 @@ cmd_upgrade() {
 		fi
 		ensure_telemetry_config_section
 		ensure_redis_config_section
+		ensure_audit_config_section
 	else
 		info "config not found; upgrade does not create ${CONFIG_PATH}"
 	fi

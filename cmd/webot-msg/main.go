@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/realli07kkk/webot-msg/internal/app"
+	"github.com/realli07kkk/webot-msg/internal/audit"
 	"github.com/realli07kkk/webot-msg/internal/control"
 	"github.com/realli07kkk/webot-msg/internal/logfile"
 	"github.com/realli07kkk/webot-msg/internal/protection"
@@ -75,6 +76,7 @@ func main() {
 	}()
 
 	guard := protection.NewRuntimeGuard()
+	auditor := audit.NewRecorder()
 	application := app.New(app.Options{
 		AuthPath:          resolved.Storage.AuthPath,
 		BaseURL:           resolved.Ilink.BaseURL,
@@ -91,8 +93,17 @@ func main() {
 		},
 		ProtectionEnabled:   guard.Enabled(),
 		ProtectionStatePath: resolved.ProtectionStatePath,
-		ReminderText:        resolved.Protection.ReminderText,
-		TimeCheckInterval:   resolved.Protection.TimeCheckIntervalDuration,
+		Auditor:             auditor,
+		AuditConfig: audit.EnableConfig{
+			RedisURL:      resolved.Redis.URL,
+			RedisPassword: resolved.Redis.Password,
+			KeyPrefix:     resolved.Redis.KeyPrefix,
+			TimeTTL:       resolved.Audit.TimeTTLDuration,
+			BodyTTL:       resolved.Audit.BodyTTLDuration,
+		},
+		AuditStatePath:    resolved.AuditStatePath,
+		ReminderText:      resolved.Protection.ReminderText,
+		TimeCheckInterval: resolved.Protection.TimeCheckIntervalDuration,
 	})
 	if err := application.Run(resolved.API.Port); err != nil {
 		if errors.Is(err, control.ErrSocketAlreadyInUse) {

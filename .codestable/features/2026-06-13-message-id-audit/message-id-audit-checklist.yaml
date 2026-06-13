@@ -1,0 +1,120 @@
+feature: 2026-06-13-message-id-audit
+created: 2026-06-13
+
+steps:
+  - action: "编排骨架：sender 接入 ID 生成器 + Auditor（先用 no-op Auditor + 注入式 idGen），跑通『生成 ID → 拼 finalText（正文+可选保护状态行+ID 行）→ 发送成功后调用 Record』"
+    exit_signal: "现有发送测试全绿；发往 ilink 的正文末尾带一行合法 uuid v7；no-op Auditor 下 Record 不报错、不改变发送结果"
+    status: done
+  - action: "计算节点：实现 internal/audit（Enable/Disable/Enabled/Record + key 构造 {prefix}:audit:time|body:{id} + TTL pipeline 写入 + 按需 otel span）"
+    exit_signal: "audit 包单测（miniredis）覆盖：开启写两 key+TTL、关闭 no-op、Redis 写失败返回 error、ctx 有父 span 时产生 span 且无父 span 时不产生"
+    status: done
+  - action: "运行期开关 + 持久化装配：app 持有 Auditor 并新增 EnableAudit/DisableAudit/PrintAuditStatus + restoreAuditState/persistAuditState（镜像保护）；console 加 /audit 命令与派发；api server 注入 idGen + Auditor"
+    exit_signal: "/audit enable|disable|status 端到端可用；enable 后发送写审计 key、disable 后不写；enable→重启→自动恢复开启无需重复 enable"
+    status: done
+  - action: "配置接通：runtimeconfig 加 [audit]（time_ttl/body_ttl，默认 24h，正数校验）+ DefaultAuditStatePath；main.go 装配 audit.EnableConfig（复用 [redis]）；scripts/linux-service.sh install 写默认 [audit]、upgrade 补 ensure_audit_config_section"
+    exit_signal: "TOML 改 TTL 生效；缺 [audit] 回退默认 24h；非法 duration 启动失败；install/upgrade 产出的 toml 含 [audit]"
+    status: done
+  - action: "测试覆盖：补齐关键场景清单剩余条目（持久化恢复/恢复失败、fail-open、otel span 范围、作用范围排除、TTL 可配），并更新 docs/user/runtime-config.md 与 linux-systemd-deploy.md 的 [audit] 说明"
+    exit_signal: "所有验收场景都有可观察证据；go test ./... 全绿；go vet ./... 通过；go fmt 无 diff"
+    status: done
+
+checks:
+  - item: "Auditor 接口（Enabled() / Record(ctx, RecordInput) error）+ RecordInput{ID,SentAt,Body} + EnableConfig{RedisURL,RedisPassword,KeyPrefix,TimeTTL,BodyTTL} 落地"
+    source: 名词契约
+    status: passed
+  - item: "审计 key 命名为 {prefix}:audit:time:{id} 与 {prefix}:audit:body:{id}，{prefix} 复用 [redis].key_prefix"
+    source: 名词契约
+    status: passed
+  - item: "DefaultAuditStatePath = ~/.webot-msg/state/audit.json（runtimeconfig 内置默认、不暴露 TOML key）+ 审计状态读写（audit_enabled 布尔、原子 temp+rename、owner-only）"
+    source: 名词契约
+    status: passed
+  - item: "console.Controller 新增 EnableAudit/DisableAudit/PrintAuditStatus，由 app.App 实现；ID 生成器默认 uuid.NewV7().String() 且可注入"
+    source: 名词契约
+    status: passed
+  - item: "发送编排：组装最终文本前生成 ID，正文 = 用户正文 + 可选保护状态行 + ID 行（ID 为最底部）；发送成功后调用 Auditor.Record"
+    source: 编排骨架
+    status: passed
+  - item: "app.Run 启动时新增 restoreAuditState，与 restoreProtectionState 并列"
+    source: 编排骨架
+    status: passed
+  - item: "审计 fail-open：Record 出错只 log 警告，不改变 SendProtectedText 返回值"
+    source: 流程级约束
+    status: passed
+  - item: "ID 生成 fail-open：uuid.NewV7() 出错则省略 ID 行、跳过审计、记日志，消息仍正常投递"
+    source: 流程级约束
+    status: passed
+  - item: "作用范围：ID+审计仅作用于普通文本成功发送（SendNormal/SendNormalThenReminder 的正文）；reject/reminder_only/保护提醒/typing 不带 ID、不审计"
+    source: 流程级约束
+    status: passed
+  - item: "持久化语义：enable/disable 成功后落 audit.json；启动恢复只尝试一次，Redis 不可用时告警、保持关闭、不改写文件"
+    source: 流程级约束
+    status: passed
+  - item: "otel：审计 Redis 写仅在 oteltrace.SpanContextFromContext(ctx).IsValid() 时起 span；span 属性不含正文/BotID/密码；两 key 用一次 pipeline SET ... PX ttl 写入"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点：/audit enable|disable|status 命令注册（commands.go CommandSpec + console.go 派发）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：[audit] TOML section（time_ttl/body_ttl，可选、缺省 24h）于 runtimeconfig"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：审计开关状态文件 ~/.webot-msg/state/audit.json（与 protection.json 并列）"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：审计 Redis key schema {prefix}:audit:time|body:{id}"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：sender 最终正文拼 ID 行 + 发送成功后调用 Auditor.Record"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：scripts/linux-service.sh install 写默认 [audit]、upgrade 补全（一致性/可发现性，非正确性必须）"
+    source: 挂载点
+    status: passed
+  - item: "范围守护：ID/审计代码不在 sendProtectionReminder 与 typing 路径出现"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：internal/audit 无独立 redis url/password 配置项，仅从 [redis] 取连接"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：HTTP API 响应 JSON 不新增 ID 字段（成功响应仍为 {code,message}）"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：无读取审计内容的命令/接口；/audit status 输出不含消息正文"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：代码不 import redisotel / go-redis/extra；审计 span 仅在有有效父 span 时创建"
+    source: 范围守护
+    status: passed
+  - item: "验收：审计关闭时发送，正文末尾仍有合法 uuid v7，ID 不进 API 响应体"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护开启带状态行时，正文顺序为 用户正文 → 保护状态行 → ID 行（ID 最后一行）"
+    source: 验收场景
+    status: passed
+  - item: "验收：/audit enable 后发送，Redis 出现 time key（发送时间 Unix 毫秒、PTTL≈time_ttl）与 body key（完全体正文、PTTL≈body_ttl 默认 24h），ID 与正文末尾一致"
+    source: 验收场景
+    status: passed
+  - item: "验收：/audit disable 后发送无新增 audit:* key"
+    source: 验收场景
+    status: passed
+  - item: "验收：enable 后重启（Redis 可用）审计自动恢复开启并写审计 key，audit.json 记 audit_enabled=true"
+    source: 验收场景
+    status: passed
+  - item: "验收：audit.json=true 但启动时 Redis 不可用，服务正常启动、审计保持关闭、告警、audit.json 不被改写"
+    source: 验收场景
+    status: passed
+  - item: "验收：审计开启但 Redis 写失败，发送仍成功（API 200 / 控制台 Send success），仅日志告警"
+    source: 验收场景
+    status: passed
+  - item: "验收：注入失败的 idGen，正文不带 ID 行、不写审计、发送仍成功"
+    source: 验收场景
+    status: passed
+  - item: "验收：telemetry 启用 + 经 API 发送，同一 trace 下出现审计 Redis 写 span 且属性不含正文/密码；经控制台发送不产生审计 root span"
+    source: 验收场景
+    status: passed
+  - item: "验收：[audit] time_ttl/body_ttl 改值后对应 key PTTL 变化；缺 [audit] 默认 24h；非法 duration 启动失败"
+    source: 验收场景
+    status: passed
+  - item: "验收：/audit status 展示审计开关状态与 time_ttl/body_ttl，不查询具体消息内容"
+    source: 验收场景
+    status: passed

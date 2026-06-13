@@ -3,9 +3,9 @@ doc_type: user-guide
 slug: linux-systemd-deploy
 component: 2026-06-10-linux-systemd-deploy
 status: current
-summary: 说明如何在 Linux systemd 环境安装、升级和控制 webot-msg 服务
-tags: [deploy, linux, systemd, control-console]
-last_reviewed: 2026-06-12
+summary: 说明如何在 Linux systemd 环境安装、升级和控制 webot-msg 服务，并维护 telemetry、Redis、audit 默认配置段
+tags: [deploy, linux, systemd, control-console, audit]
+last_reviewed: 2026-06-13
 ---
 
 # Linux systemd 部署说明
@@ -38,7 +38,7 @@ last_reviewed: 2026-06-12
 - 写入 `/etc/systemd/system/webot-msg.service`
 - 执行 `systemctl daemon-reload`
 
-默认配置文件已存在时，脚本会保留原文件，不会覆盖端口、日志路径、iLink 地址等用户改动。升级时如果旧配置缺少 `[telemetry]` 或 `[redis]` section，脚本会非破坏性追加默认关闭的 telemetry 配置和默认 Redis 配置，方便后续启用链路追踪或发送保护。脚本不会删除或修改 `~/.webot-msg/config/auth.json`。
+默认配置文件已存在时，脚本会保留原文件，不会覆盖端口、日志路径、iLink 地址等用户改动。升级时如果旧配置缺少 `[telemetry]`、`[redis]` 或 `[audit]` section，脚本会非破坏性追加默认 telemetry、Redis 和 audit 配置，方便后续启用链路追踪、发送保护或发送审计。脚本不会删除或修改 `~/.webot-msg/config/auth.json`。
 
 安装完成后，`webot-msg` 位于常见系统 `PATH` 内，可以直接确认：
 
@@ -113,7 +113,9 @@ nc -U "$HOME/.webot-msg/webot-msg.sock"
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
-升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段，也不会把原本关闭的发送保护或 telemetry 自动打开。已经通过 `/protection enable` 成功开启过的实例，会在升级重启后读取 `~/.webot-msg/state/protection.json` 并尝试一次自动恢复保护；如果 Redis 不可用，服务仍会启动但保护保持关闭，并在日志中提示可修复后手动执行 `/protection enable`。如果旧配置缺少 `[telemetry]` section，脚本会追加 endpoint 为空的默认关闭配置；需要启用链路追踪时再填入 OTLP endpoint 和认证配置。首次开启保护时，如果旧配置缺少 `[redis]` section，脚本会追加默认 Redis 配置；确认 Redis 地址和密码后，连接 control socket 执行 `/protection enable`。
+升级不会覆盖已有 `~/.webot-msg/config/webot-msg.toml` 的既有字段，也不会把原本关闭的发送保护、发送审计或 telemetry 自动打开。升级到包含消息 ID 的版本后，所有普通文本正文最底部都会新增一行 uuid v7；如果你有自动化接收方依赖旧正文精确匹配，需要先让接收端容忍或剥离末行 uuid v7。HTTP API 响应 JSON 不新增 ID 字段。
+
+已经通过 `/protection enable` 成功开启过的实例，会在升级重启后读取 `~/.webot-msg/state/protection.json` 并尝试一次自动恢复保护；已经通过 `/audit enable` 成功开启过的实例，会读取 `~/.webot-msg/state/audit.json` 并尝试一次自动恢复审计。如果 Redis 不可用，服务仍会启动，但对应能力保持关闭，并在日志中提示可修复后手动执行 `/protection enable` 或 `/audit enable`。如果旧配置缺少 `[telemetry]` section，脚本会追加 endpoint 为空的默认关闭配置；需要启用链路追踪时再填入 OTLP endpoint 和认证配置。首次开启保护或审计时，如果旧配置缺少 `[redis]` section，脚本会追加默认 Redis 配置；确认 Redis 地址和密码后，连接 control socket 执行 `/protection enable` 或 `/audit enable`。缺少 `[audit]` section 时，脚本会追加默认 `24h` TTL 配置。
 
 ## 默认配置
 
@@ -150,9 +152,13 @@ service_name = "webot-msg"
 url = "redis://localhost:6379/0"
 password = "redis123456"
 key_prefix = "webot-msg"
+
+[audit]
+time_ttl = "24h"
+body_ttl = "24h"
 ```
 
-Runtime config 只保存启动参数，不要写入 bot token、API token、context token 或消息正文。开启发送保护模式时，`redis.password` 属于本机凭据；启用 telemetry 时，`telemetry.headers` 和 `telemetry.resource_attributes` 也可能包含 APM 鉴权信息。这些真实值都不要提交到 Git。
+Runtime config 只保存启动参数，不要写入 bot token、API token、context token 或消息正文。开启发送保护或发送审计时，`redis.password` 属于本机凭据；启用 telemetry 时，`telemetry.headers` 和 `telemetry.resource_attributes` 也可能包含 APM 鉴权信息。审计开启后，Redis 的 `audit:body` key 会保存完整发送正文，应按数据保留策略调整 `audit.body_ttl`。这些真实值都不要提交到 Git。
 
 ## 相关功能
 

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -20,13 +21,15 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/realli07kkk/webot-msg/internal/audit"
 	"github.com/realli07kkk/webot-msg/internal/config"
 	"github.com/realli07kkk/webot-msg/internal/ilink"
 	"github.com/realli07kkk/webot-msg/internal/protection"
+	"github.com/realli07kkk/webot-msg/internal/sender"
 	"github.com/realli07kkk/webot-msg/internal/telemetry"
 )
 
-func TestTelemetryE2EExportsInboundAndOutboundSpansWithSameTrace(t *testing.T) {
+func TestTelemetryE2EExportsInboundOutboundAndAuditSpansWithSameTrace(t *testing.T) {
 	resetOpenTelemetry(t)
 
 	collector := newTraceCollector(t)
@@ -56,7 +59,13 @@ func TestTelemetryE2EExportsInboundAndOutboundSpansWithSameTrace(t *testing.T) {
 
 	store := newAPIStore(t)
 	client := ilink.NewClient(ilinkServer.URL)
-	server := NewServer(store, client, protection.NoopGuard{}, "reminder")
+	auditor := newEnabledTestAuditor(t)
+	server := NewServerWithClientOptions(store, client, protection.NoopGuard{}, "reminder", sender.TextOptions{
+		IDGenerator: func() (string, error) {
+			return fixedMessageID, nil
+		},
+		Auditor: auditor,
+	})
 
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
@@ -71,17 +80,21 @@ func TestTelemetryE2EExportsInboundAndOutboundSpansWithSameTrace(t *testing.T) {
 		t.Fatalf("telemetry shutdown error = %v", err)
 	}
 
-	spans := collector.Spans(t)
+	spans := collector.SpansAtLeast(t, 3)
 	serverTraceID := traceIDForKind(spans, tracepb.Span_SPAN_KIND_SERVER)
 	clientTraceID := traceIDForKind(spans, tracepb.Span_SPAN_KIND_CLIENT)
+	auditTraceID := traceIDForName(spans, "audit.record")
 	if serverTraceID == "" {
 		t.Fatalf("server span not found; spans=%d", len(spans))
 	}
 	if clientTraceID == "" {
 		t.Fatalf("client span not found; spans=%d", len(spans))
 	}
-	if serverTraceID != clientTraceID {
-		t.Fatalf("trace_id mismatch: server=%s client=%s", serverTraceID, clientTraceID)
+	if auditTraceID == "" {
+		t.Fatalf("audit.record span not found; spans=%d", len(spans))
+	}
+	if serverTraceID != clientTraceID || serverTraceID != auditTraceID {
+		t.Fatalf("trace_id mismatch: server=%s client=%s audit=%s", serverTraceID, clientTraceID, auditTraceID)
 	}
 }
 
@@ -231,11 +244,15 @@ func newTraceCollector(t *testing.T) *traceCollector {
 }
 
 func (c *traceCollector) Spans(t *testing.T) []*tracepb.Span {
+	return c.SpansAtLeast(t, 2)
+}
+
+func (c *traceCollector) SpansAtLeast(t *testing.T, want int) []*tracepb.Span {
 	t.Helper()
 
 	var spans []*tracepb.Span
 	timeout := time.After(2 * time.Second)
-	for len(spans) < 2 {
+	for len(spans) < want {
 		select {
 		case errText := <-c.errors:
 			t.Fatal(errText)
@@ -246,7 +263,7 @@ func (c *traceCollector) Spans(t *testing.T) []*tracepb.Span {
 				}
 			}
 		case <-timeout:
-			t.Fatalf("timed out waiting for exported spans; got %d", len(spans))
+			t.Fatalf("timed out waiting for exported spans; got %d, want at least %d", len(spans), want)
 		}
 	}
 	return spans
@@ -259,6 +276,36 @@ func traceIDForKind(spans []*tracepb.Span, kind tracepb.Span_SpanKind) string {
 		}
 	}
 	return ""
+}
+
+func traceIDForName(spans []*tracepb.Span, name string) string {
+	for _, span := range spans {
+		if span.Name == name {
+			return hex.EncodeToString(span.TraceId)
+		}
+	}
+	return ""
+}
+
+func newEnabledTestAuditor(t *testing.T) *audit.Recorder {
+	t.Helper()
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run() error = %v", err)
+	}
+	t.Cleanup(redisServer.Close)
+
+	auditor := audit.NewRecorder()
+	if err := auditor.Enable(context.Background(), audit.EnableConfig{
+		RedisURL:  "redis://" + redisServer.Addr() + "/0",
+		KeyPrefix: "webot-msg",
+		TimeTTL:   time.Hour,
+		BodyTTL:   time.Hour,
+	}); err != nil {
+		t.Fatalf("Enable audit recorder error = %v", err)
+	}
+	t.Cleanup(auditor.Disable)
+	return auditor
 }
 
 func testEndpoint(t *testing.T, rawURL string) string {

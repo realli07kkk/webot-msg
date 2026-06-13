@@ -23,10 +23,11 @@ type messageClient interface {
 }
 
 type Server struct {
-	store        *config.Store
-	client       messageClient
-	guard        protection.Guard
-	reminderText string
+	store         *config.Store
+	client        messageClient
+	guard         protection.Guard
+	reminderText  string
+	senderOptions sender.TextOptions
 }
 
 func NewServer(store *config.Store, client *ilink.Client, guard protection.Guard, reminderText string) *Server {
@@ -34,14 +35,19 @@ func NewServer(store *config.Store, client *ilink.Client, guard protection.Guard
 }
 
 func NewServerWithClient(store *config.Store, client messageClient, guard protection.Guard, reminderText string) *Server {
+	return NewServerWithClientOptions(store, client, guard, reminderText, sender.TextOptions{})
+}
+
+func NewServerWithClientOptions(store *config.Store, client messageClient, guard protection.Guard, reminderText string, senderOptions sender.TextOptions) *Server {
 	if guard == nil {
 		guard = protection.NoopGuard{}
 	}
 	return &Server{
-		store:        store,
-		client:       client,
-		guard:        guard,
-		reminderText: reminderText,
+		store:         store,
+		client:        client,
+		guard:         guard,
+		reminderText:  reminderText,
+		senderOptions: senderOptions,
 	}
 }
 
@@ -134,7 +140,7 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
-	if _, err := sender.SendProtectedText(r.Context(), s.client, s.guard, user, text, s.reminderText); err != nil {
+	if _, err := sender.SendProtectedTextWithOptions(r.Context(), s.client, s.guard, user, text, s.reminderText, s.senderOptions); err != nil {
 		if protection.IsRejection(err) {
 			reason := protection.RejectionReason(err)
 			s.sendProtectionLocked(w, protection.RejectionMessage(reason), reason)

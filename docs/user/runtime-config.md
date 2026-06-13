@@ -3,16 +3,16 @@ doc_type: user-guide
 slug: runtime-config
 component: 2026-06-10-runtime-toml-config
 status: current
-summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略、OpenTelemetry traces 和 Redis
-tags: [config, cli, control-console, autocomplete, logging, telemetry, tracing, protection, redis]
-last_reviewed: 2026-06-12
+summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略、OpenTelemetry traces、Redis 和消息审计 TTL
+tags: [config, cli, control-console, autocomplete, logging, telemetry, tracing, protection, redis, audit]
+last_reviewed: 2026-06-13
 ---
 
 # 运行配置说明
 
 ## 功能简介
 
-`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限、OpenTelemetry traces 和 Redis 连接。
+`webot-msg` 启动时默认读取 `~/.webot-msg/config/webot-msg.toml`，用来调整本地 API 端口、auth store 路径、本地控制台 socket、iLink BaseURL、日志文件路径、日志大小上限、OpenTelemetry traces、Redis 连接和审计 key TTL。
 
 如果默认配置文件不存在，程序会回退到内置默认值，保持直接运行二进制的兼容性。CLI 不再提供启动参数覆盖入口；要调整端口、auth store 或 control socket，请修改默认 TOML 后重启服务。无参运行 `webot-msg` 时，如果配置里的 control socket 已有运行中服务，程序会直接接入该控制台；没有可用 socket 时才启动新的前台 service。
 
@@ -63,6 +63,10 @@ service_name = "webot-msg"
 url = "redis://localhost:6379/0"
 password = ""
 key_prefix = "webot-msg"
+
+[audit]
+time_ttl = "24h"
+body_ttl = "24h"
 ```
 
 3. 启动或接入服务：
@@ -103,9 +107,11 @@ webot-msg
 | `telemetry.service_name` | `webot-msg` | 上报 resource 的 `service.name` |
 | `telemetry.resource_attributes` | `{}` | 自由 map；例如腾讯云 APM 的 token 可放在这里 |
 | `telemetry.headers` | `{}` | 自由 map；需要 header 认证的 OTLP endpoint 可放在这里 |
-| `redis.url` | `""`（部署脚本示例写 `redis://localhost:6379/0`） | Redis 地址和 DB；执行 `/protection enable` 时不能为空，推荐不在 URL 中写密码 |
-| `redis.password` | `""` | Redis 认证密码；如果 `redis.url` 已自带 password，本字段也非空会在执行 `/protection enable` 时失败 |
+| `redis.url` | `""`（部署脚本示例写 `redis://localhost:6379/0`） | Redis 地址和 DB；执行 `/protection enable` 或 `/audit enable` 时不能为空，推荐不在 URL 中写密码 |
+| `redis.password` | `""` | Redis 认证密码；如果 `redis.url` 已自带 password，本字段也非空会在执行 `/protection enable` 或 `/audit enable` 时失败 |
 | `redis.key_prefix` | `webot-msg` | Redis key 前缀；不同环境共用同一个 Redis 时建议改成不同值 |
+| `audit.time_ttl` | `24h` | 审计发送时间 key 的 TTL；必须是 Go duration 正数，例如 `"2h"`、`"24h"` |
+| `audit.body_ttl` | `24h` | 审计完整正文 key 的 TTL；必须是 Go duration 正数 |
 
 ## OpenTelemetry traces
 
@@ -125,7 +131,28 @@ token = "your-apm-token"
 env = "prod"
 ```
 
-配置只走 TOML。即使进程环境里存在 `OTEL_EXPORTER_OTLP*`，本项目也不会把它们作为 telemetry 配置入口。上报失败不会改变 API 发送请求的业务返回。
+配置只走 TOML。即使进程环境里存在 `OTEL_EXPORTER_OTLP*`，本项目也不会把它们作为 telemetry 配置入口。上报失败不会改变 API 发送请求的业务返回。审计开启后，经本地 API 发送普通文本时，审计 Redis 写入会在同一条 trace 下产生 `audit.record` span；控制台发送不会创建审计 root span。
+
+## 消息 ID 与发送审计
+
+普通文本发送成功前，程序会在发往微信的正文最底部追加一行 uuid v7 消息 ID。这个 ID 与审计开关无关；HTTP API 成功响应仍保持 `{code,message}`，不会新增 ID 字段。
+
+这是一次有意的正文格式变化。升级后，人工阅读者会在每条普通文本最后看到一行 UUID；如果你有自动化接收方依赖旧正文精确匹配，需要让接收端容忍或剥离末行 uuid v7。保护提醒消息、typing、保护拒绝和 reminder-only 路径不追加这个 ID。
+
+发送审计默认关闭，并且开启状态不写在 TOML 里。需要启用时，先配置 `[redis]` 和 `[audit]`，再进入运行中服务的控制台执行：
+
+```text
+/audit enable
+```
+
+开启后，程序会把审计开关写入 `~/.webot-msg/state/audit.json`。服务重启或升级后会读取这个状态文件；如果记录为开启，程序会在启动时尝试一次自动恢复审计。Redis 不可用时恢复失败并告警，审计保持关闭，状态文件不会被改写，你可以修复 Redis 后手动执行 `/audit enable`。如果运行态已切换但 `audit.json` 落盘失败，控制台会返回 partial-success 错误；当前进程里的开关已经生效，但重启后的自动恢复不可靠，需要修复状态目录权限后重新执行命令。
+
+审计开启后，每条普通文本成功发送会写入两个 Redis key：
+
+- `{redis.key_prefix}:audit:time:{id}`：值为发送成功时间的 Unix 毫秒，TTL 使用 `audit.time_ttl`。
+- `{redis.key_prefix}:audit:body:{id}`：值为实际发往微信的完整正文，TTL 使用 `audit.body_ttl`。
+
+审计写入失败会 fail open：消息发送仍返回成功，只记录告警。查看当前审计开关和 TTL 可以执行 `/audit status`；关闭审计可以执行 `/audit disable`。
 
 ## 发送保护模式
 
@@ -162,6 +189,7 @@ env = "prod"
     webot-msg.log
   state/
     protection.json
+    audit.json
   webot-msg.sock
 ```
 
@@ -181,6 +209,7 @@ env = "prod"
 - 默认 auth store 目录和文件会按 owner-only 权限创建。
 - 自定义 `storage.auth_path` 时，建议仍放在当前用户私有目录下。
 - Runtime config 可以提交模板，但不要把真实凭据写进去，尤其不要提交真实 `redis.password`。
+- 审计开启后，Redis 的 `audit:body` key 会保存完整发送正文；按你的数据保留策略调整 `audit.body_ttl`。
 - `telemetry.headers` 和 `telemetry.resource_attributes` 可能包含 APM 鉴权信息，真实值只应保存在部署机器本地。
 
 ## 常见问题

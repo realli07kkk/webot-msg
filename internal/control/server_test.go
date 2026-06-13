@@ -136,6 +136,12 @@ func (c *broadcastController) DisableProtection(io.Writer) error { return nil }
 
 func (c *broadcastController) PrintProtectionStatus(string, io.Writer) {}
 
+func (c *broadcastController) EnableAudit(io.Writer) error { return nil }
+
+func (c *broadcastController) DisableAudit(io.Writer) error { return nil }
+
+func (c *broadcastController) PrintAuditStatus(io.Writer) {}
+
 func (c *broadcastController) SendText(string, string) error { return nil }
 
 func (c *broadcastController) AddConsoleOutput(io.Writer) func() {
