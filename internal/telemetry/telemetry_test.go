@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	otelsdk "go.opentelemetry.io/otel/sdk"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	collectortracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/protobuf/proto"
@@ -116,7 +117,18 @@ func TestSetupHTTPExporterSendsHeadersAndResourceAttributes(t *testing.T) {
 	case errText := <-errors:
 		t.Fatal(errText)
 	case exportReq := <-requests:
+		hostname, err := os.Hostname()
+		if err != nil {
+			t.Fatalf("hostname: %v", err)
+		}
+
 		assertResourceAttribute(t, exportReq, "service.name", "custom-service")
+		assertResourceAttribute(t, exportReq, "host.name", hostname)
+		assertResourceAttribute(t, exportReq, "agent.version", otelsdk.Version())
+		assertResourceAttribute(t, exportReq, "telemetry.sdk.name", "opentelemetry")
+		assertResourceAttribute(t, exportReq, "telemetry.sdk.language", "go")
+		assertResourceAttribute(t, exportReq, "telemetry.sdk.version", otelsdk.Version())
+		assertResourceAttributeNonEmpty(t, exportReq, "service.instance.id")
 		assertResourceAttribute(t, exportReq, "token", "tencent-token")
 		assertResourceAttribute(t, exportReq, "env", "test")
 	default:
@@ -256,6 +268,21 @@ func assertResourceAttribute(t *testing.T, exportReq *collectortracepb.ExportTra
 			if attr.Key == key {
 				if got := attr.Value.GetStringValue(); got != want {
 					t.Fatalf("resource attribute %s = %q, want %q", key, got, want)
+				}
+				return
+			}
+		}
+	}
+	t.Fatalf("resource attribute %s not found", key)
+}
+
+func assertResourceAttributeNonEmpty(t *testing.T, exportReq *collectortracepb.ExportTraceServiceRequest, key string) {
+	t.Helper()
+	for _, resourceSpan := range exportReq.ResourceSpans {
+		for _, attr := range resourceSpan.Resource.Attributes {
+			if attr.Key == key {
+				if got := attr.Value.GetStringValue(); got == "" {
+					t.Fatalf("resource attribute %s is empty", key)
 				}
 				return
 			}

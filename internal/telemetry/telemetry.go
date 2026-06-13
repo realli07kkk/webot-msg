@@ -13,6 +13,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	otelsdk "go.opentelemetry.io/otel/sdk"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -113,8 +114,19 @@ func isOTLPExporterEnv(key string) bool {
 }
 
 func newResource(cfg Config) *resource.Resource {
+	detected, err := resource.New(
+		context.Background(),
+		resource.WithHost(),
+		resource.WithTelemetrySDK(),
+		resource.WithService(),
+	)
+	if err != nil && detected == nil {
+		detected = resource.Empty()
+	}
+
 	attrs := []attribute.KeyValue{
 		attribute.String("service.name", serviceName(cfg.ServiceName)),
+		attribute.String("agent.version", otelsdk.Version()),
 	}
 
 	keys := make([]string, 0, len(cfg.ResourceAttributes))
@@ -125,7 +137,13 @@ func newResource(cfg Config) *resource.Resource {
 	for _, key := range keys {
 		attrs = append(attrs, attribute.String(key, cfg.ResourceAttributes[key]))
 	}
-	return resource.NewWithAttributes("", attrs...)
+
+	configured := resource.NewWithAttributes("", attrs...)
+	merged, err := resource.Merge(detected, configured)
+	if err != nil {
+		return configured
+	}
+	return merged
 }
 
 func normalizedProtocol(protocol string) string {
