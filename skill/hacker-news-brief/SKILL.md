@@ -1,11 +1,11 @@
 ---
 name: hacker-news-brief
-description: Generate Simplified Chinese Hacker News morning briefs from the current HN front page. Use when an agent needs to fetch news.ycombinator.com in a CLI-only Linux environment, collect the first 30 stories in page order, read accessible original links with the agent's available built-in tools, synthesize 3-5 overall trends, and produce a polished Chinese briefing with source-access caveats.
+description: Generate Simplified Chinese Hacker News briefs from the current HN front page at any time of day. Use when an agent needs to fetch news.ycombinator.com in a CLI-only Linux environment, collect the first 30 stories in page order, read accessible original links with the agent's available built-in tools, synthesize 3-5 overall trends, and produce a polished Chinese briefing with source-access caveats.
 ---
 
 # Hacker News Brief
 
-Generate a Simplified Chinese morning brief from the current Hacker News front page. The output should feel like an editorial briefing, not a raw feed dump.
+Generate a Simplified Chinese brief from the current Hacker News front page. The output should feel like an editorial briefing, not a raw feed dump.
 
 This skill is designed for CLI-only Linux hosts. Use the current agent's available built-in web/HTTP reading tools, command-line tools, and the bundled Python script; do not require a browser, Chrome extension, or desktop UI.
 
@@ -54,7 +54,7 @@ This skill is designed for CLI-only Linux hosts. Use the current agent's availab
 Use this structure:
 
 ```text
-☕ Hacker News 晨间简报 — YYYY 年 M 月 D 日
+{时段图标} Hacker News {时段}简报 — YYYY 年 M 月 D 日 HH:MM
 
 🤖 本简报由 AI 自动生成。摘要基于可访问的原文内容；无法访问的原文已明确标注为基于 Hacker News 标题和页面可见信息。
 
@@ -74,6 +74,20 @@ Use this structure:
 
 ...
 ```
+
+### 标题行规则
+
+标题行需反映实际运行时刻，使同一天多次运行的简报彼此可区分。
+
+- 所有时间一律以东八区（UTC+8，Asia/Shanghai）为基准，不使用运行环境本地时区。
+  - 在 CLI Linux 上可用 `TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M'` 取得东八区当前时间。
+- `{时段图标}` 与 `{时段}` 按东八区时间所属区间自动选择：
+  - 05:00–10:59 → `☕` + `晨间`
+  - 11:00–17:59 → `🌤️` + `午间`
+  - 18:00–04:59 → `🌙` + `晚间`
+- `HH:MM` 使用东八区 24 小时制时间，精确到分钟，用于区分同一天的多次运行。
+- `YYYY 年 M 月 D 日` 使用东八区日期。
+- 不要把时段词写死为“晨间”；务必按上述时间区间动态选择。
 
 ## Style Rules
 
