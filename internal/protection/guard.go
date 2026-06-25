@@ -87,6 +87,7 @@ type Status struct {
 	ActiveWindowRemaining  time.Duration
 	TimeBeforeWarning      time.Duration
 	ReminderPending        bool
+	QueuedCount            int
 }
 
 type NoopGuard struct{}

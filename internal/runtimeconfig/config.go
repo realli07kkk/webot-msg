@@ -28,6 +28,7 @@ const (
 	DefaultActiveWindow        = "24h"
 	DefaultTimeWarningBefore   = "30m"
 	DefaultTimeCheckInterval   = "1m"
+	DefaultProtectionQueueMax  = 1000
 	DefaultAuditTTL            = "24h"
 	DefaultReminderText        = "webot-msg 保护模式提醒：即将达到微信主动对话限制，请从微信 App 给机器人发一条消息后再继续发送。"
 	DefaultTelemetryProtocol   = "grpc"
@@ -98,9 +99,11 @@ type ProtectionConfig struct {
 	TimeWarningBefore         string
 	TimeCheckInterval         string
 	ReminderText              string
+	QueueMaxLen               int
 	ActiveWindowDuration      time.Duration
 	TimeWarningBeforeDuration time.Duration
 	TimeCheckIntervalDuration time.Duration
+	QueueTTLDuration          time.Duration
 }
 
 type LegacyProtectionConfig struct {
@@ -167,6 +170,7 @@ func Default() Config {
 			TimeWarningBefore:       DefaultTimeWarningBefore,
 			TimeCheckInterval:       DefaultTimeCheckInterval,
 			ReminderText:            DefaultReminderText,
+			QueueMaxLen:             DefaultProtectionQueueMax,
 		},
 		ProtectionStatePath: DefaultProtectionStatePath,
 		Redis: RedisConfig{
@@ -291,6 +295,7 @@ func resolveProtection(cfg *Config) error {
 	cfg.Protection.ActiveWindowDuration = activeWindow
 	cfg.Protection.TimeWarningBeforeDuration = timeWarningBefore
 	cfg.Protection.TimeCheckIntervalDuration = timeCheckInterval
+	cfg.Protection.QueueTTLDuration = activeWindow
 
 	if cfg.Protection.MessageLimit < 2 {
 		return fmt.Errorf("protection.message_limit: must be at least 2")
@@ -300,6 +305,9 @@ func resolveProtection(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.Protection.ReminderText) == "" {
 		return fmt.Errorf("protection.reminder_text: must not be empty")
+	}
+	if cfg.Protection.QueueMaxLen <= 0 {
+		cfg.Protection.QueueMaxLen = DefaultProtectionQueueMax
 	}
 	if cfg.Redis.KeyPrefix == "" {
 		cfg.Redis.KeyPrefix = DefaultRedisKeyPrefix

@@ -140,7 +140,8 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request, user 
 		return
 	}
 
-	if _, err := sender.SendProtectedTextWithOptions(r.Context(), s.client, s.guard, user, text, s.reminderText, s.senderOptions); err != nil {
+	outcome, err := sender.SendOrEnqueueText(r.Context(), s.client, s.guard, user, text, s.reminderText, s.senderOptions)
+	if err != nil {
 		if protection.IsRejection(err) {
 			reason := protection.RejectionReason(err)
 			s.sendProtectionLocked(w, protection.RejectionMessage(reason), reason)
@@ -149,7 +150,16 @@ func (s *Server) handleSendMessage(w http.ResponseWriter, r *http.Request, user 
 		sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"code": 500, "error": err.Error()})
 		return
 	}
-	sendJSON(w, http.StatusOK, map[string]interface{}{"code": 200, "message": "OK"})
+	switch outcome.Kind {
+	case sender.OutcomeSent:
+		sendJSON(w, http.StatusOK, map[string]interface{}{"code": 200, "message": "OK"})
+	case sender.OutcomeQueued:
+		sendJSON(w, http.StatusAccepted, map[string]interface{}{"code": http.StatusAccepted, "status": "queued", "queued": outcome.QueueLen})
+	case sender.OutcomeQueueFull:
+		sendJSON(w, http.StatusServiceUnavailable, map[string]interface{}{"code": http.StatusServiceUnavailable, "error": "send queue full"})
+	default:
+		sendJSON(w, http.StatusInternalServerError, map[string]interface{}{"code": 500, "error": "unexpected send outcome"})
+	}
 }
 
 func (s *Server) sendProtectionLocked(w http.ResponseWriter, message string, reason string) {

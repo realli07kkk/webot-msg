@@ -46,6 +46,9 @@ func TestLoadFileMergesDefaults(t *testing.T) {
 	if cfg.Protection.MessageLimit != 10 {
 		t.Fatalf("Protection.MessageLimit = %d, want 10", cfg.Protection.MessageLimit)
 	}
+	if cfg.Protection.QueueMaxLen != DefaultProtectionQueueMax {
+		t.Fatalf("Protection.QueueMaxLen = %d, want %d", cfg.Protection.QueueMaxLen, DefaultProtectionQueueMax)
+	}
 	if cfg.Redis.URL != "" {
 		t.Fatalf("Redis.URL = %q, want empty default", cfg.Redis.URL)
 	}
@@ -350,6 +353,12 @@ func TestResolveExpandsHomeAndParsesLogSize(t *testing.T) {
 	}
 	if resolved.Protection.TimeCheckIntervalDuration != time.Minute {
 		t.Fatalf("Protection.TimeCheckIntervalDuration = %s, want 1m", resolved.Protection.TimeCheckIntervalDuration)
+	}
+	if resolved.Protection.QueueTTLDuration != 24*time.Hour {
+		t.Fatalf("Protection.QueueTTLDuration = %s, want 24h", resolved.Protection.QueueTTLDuration)
+	}
+	if resolved.Protection.QueueMaxLen != DefaultProtectionQueueMax {
+		t.Fatalf("Protection.QueueMaxLen = %d, want %d", resolved.Protection.QueueMaxLen, DefaultProtectionQueueMax)
 	}
 	if resolved.Audit.TimeTTLDuration != 24*time.Hour {
 		t.Fatalf("Audit.TimeTTLDuration = %s, want 24h", resolved.Audit.TimeTTLDuration)

@@ -17,6 +17,8 @@ type RedisGuardConfig struct {
 	MessageWarningRemaining int
 	ActiveWindow            time.Duration
 	TimeWarningBefore       time.Duration
+	QueueMaxLen             int
+	QueueTTL                time.Duration
 }
 
 type RedisGuard struct {
@@ -26,6 +28,8 @@ type RedisGuard struct {
 	messageWarningRemaining int
 	activeWindow            time.Duration
 	timeWarningBefore       time.Duration
+	queueMaxLen             int
+	queueTTL                time.Duration
 	now                     func() time.Time
 }
 
@@ -69,6 +73,14 @@ func ValidateRedisURL(value string, password string) (string, error) {
 }
 
 func NewRedisGuard(client *redis.Client, cfg RedisGuardConfig) *RedisGuard {
+	queueMaxLen := cfg.QueueMaxLen
+	if queueMaxLen <= 0 {
+		queueMaxLen = 1000
+	}
+	queueTTL := cfg.QueueTTL
+	if queueTTL <= 0 {
+		queueTTL = cfg.ActiveWindow
+	}
 	return &RedisGuard{
 		client:                  client,
 		keyPrefix:               cfg.KeyPrefix,
@@ -76,6 +88,8 @@ func NewRedisGuard(client *redis.Client, cfg RedisGuardConfig) *RedisGuard {
 		messageWarningRemaining: cfg.MessageWarningRemaining,
 		activeWindow:            cfg.ActiveWindow,
 		timeWarningBefore:       cfg.TimeWarningBefore,
+		queueMaxLen:             queueMaxLen,
+		queueTTL:                queueTTL,
 		now:                     time.Now,
 	}
 }
@@ -132,6 +146,10 @@ func (g *RedisGuard) ProtectionStatus(ctx context.Context, botID string) (Status
 	if err != nil {
 		return Status{}, NewRejection("redis", err)
 	}
+	queuedCount, err := g.QueueLen(ctx, botID)
+	if err != nil {
+		return Status{}, err
+	}
 
 	outCount := parseRedisInt(values[0])
 	threshold := g.messageLimit - g.messageWarningRemaining
@@ -164,6 +182,7 @@ func (g *RedisGuard) ProtectionStatus(ctx context.Context, botID string) (Status
 		ActiveWindowRemaining:  activeWindowRemaining,
 		TimeBeforeWarning:      timeBeforeWarning,
 		ReminderPending:        fmt.Sprint(values[3]) == "1",
+		QueuedCount:            queuedCount,
 	}, nil
 }
 

@@ -90,6 +90,8 @@ func main() {
 			MessageWarningRemaining: resolved.Protection.MessageWarningRemaining,
 			ActiveWindow:            resolved.Protection.ActiveWindowDuration,
 			TimeWarningBefore:       resolved.Protection.TimeWarningBeforeDuration,
+			QueueMaxLen:             resolved.Protection.QueueMaxLen,
+			QueueTTL:                resolved.Protection.QueueTTLDuration,
 		},
 		ProtectionEnabled:   guard.Enabled(),
 		ProtectionStatePath: resolved.ProtectionStatePath,

@@ -151,3 +151,46 @@ func TestRuntimeGuardStatusWhenDisabled(t *testing.T) {
 		t.Fatalf("Status.BotID = %q, want bot-1", status.BotID)
 	}
 }
+
+func TestRuntimeGuardOperationExposesSendQueueController(t *testing.T) {
+	redisServer, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis.Run() error = %v", err)
+	}
+	defer redisServer.Close()
+
+	guard := NewRuntimeGuard()
+	if err := guard.Enable(context.Background(), EnableConfig{
+		RedisURL:                "redis://" + redisServer.Addr() + "/0",
+		KeyPrefix:               "webot-msg",
+		MessageLimit:            10,
+		MessageWarningRemaining: 1,
+		ActiveWindow:            24 * time.Hour,
+		TimeWarningBefore:       30 * time.Minute,
+		QueueMaxLen:             2,
+		QueueTTL:                24 * time.Hour,
+	}); err != nil {
+		t.Fatalf("Enable() error = %v", err)
+	}
+
+	operation := guard.BeginOperation()
+	defer operation.Done()
+	controller, ok := operation.(SendQueueController)
+	if !ok {
+		t.Fatal("runtime operation does not expose SendQueueController")
+	}
+	ingress, err := controller.AcquireOrEnqueue(context.Background(), "bot-1", "queued")
+	if err != nil {
+		t.Fatalf("AcquireOrEnqueue() error = %v", err)
+	}
+	if ingress.Outcome != IngressQueued || ingress.QueueLen != 1 {
+		t.Fatalf("AcquireOrEnqueue() = %#v, want queued length 1", ingress)
+	}
+	queueLen, err := controller.QueueLen(context.Background(), "bot-1")
+	if err != nil {
+		t.Fatalf("QueueLen() error = %v", err)
+	}
+	if queueLen != 1 {
+		t.Fatalf("QueueLen() = %d, want 1", queueLen)
+	}
+}

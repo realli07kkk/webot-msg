@@ -68,6 +68,7 @@ type App struct {
 	monitorMu                 sync.Mutex
 	runningMonitors           map[string]struct{}
 	runningProtectionCheckers map[string]*protectionChecker
+	runningSendQueueDrainers  map[string]*sendQueueDrainer
 
 	consoleOutputMu     sync.Mutex
 	consoleOutputs      map[int]io.Writer
@@ -112,6 +113,7 @@ func New(opts Options) *App {
 		timeCheckInterval:         opts.TimeCheckInterval,
 		runningMonitors:           make(map[string]struct{}),
 		runningProtectionCheckers: make(map[string]*protectionChecker),
+		runningSendQueueDrainers:  make(map[string]*sendQueueDrainer),
 		consoleOutputs:            make(map[int]io.Writer),
 	}
 }
@@ -235,6 +237,7 @@ func (a *App) DeleteBot(idx int, out io.Writer) (string, bool) {
 		return "", false
 	}
 	a.stopProtectionChecker(botID)
+	a.stopSendQueueDrainer(botID)
 	fmt.Fprintf(out, "Bot deleted: %s\n", botID)
 	return botID, true
 }
@@ -251,6 +254,7 @@ func (a *App) EnableProtection(out io.Writer) error {
 	a.protectionEnabled = true
 	for _, botID := range a.store.BotIDs() {
 		a.startProtectionChecker(botID)
+		a.startSendQueueDrainer(botID)
 	}
 	fmt.Fprintf(out, "Protection enabled. Redis key prefix: %s\n", a.protectionConfig.KeyPrefix)
 	a.persistProtectionState(out, true)
@@ -264,6 +268,7 @@ func (a *App) DisableProtection(out io.Writer) error {
 	a.stopProtectionCheckers()
 	a.runtimeGuard.Disable()
 	a.protectionEnabled = false
+	a.stopSendQueueDrainers()
 	fmt.Fprintln(out, "Protection disabled.")
 	a.persistProtectionState(out, false)
 	return nil
@@ -306,6 +311,9 @@ func (a *App) restoreProtectionState(warnOut io.Writer) {
 	}
 	a.protectionEnabled = true
 	log.Printf("Protection auto-restore succeeded. Redis key prefix: %s", a.protectionConfig.KeyPrefix)
+	for _, botID := range a.store.BotIDs() {
+		a.startSendQueueDrainer(botID)
+	}
 }
 
 func (a *App) warnProtectionRestore(out io.Writer, format string, args ...any) {
@@ -360,6 +368,7 @@ func (a *App) printProtectionStatus(status protection.Status, out io.Writer) {
 	} else {
 		fmt.Fprintln(out, "Frozen: no")
 	}
+	fmt.Fprintf(out, "Queued messages: %d\n", status.QueuedCount)
 	if !status.ActiveWindowReady {
 		fmt.Fprintln(out, "Active window: not ready; send a message from WeChat app before continuing.")
 		return
@@ -747,6 +756,8 @@ func (a *App) persistUpdateState(botID string, updateRes *ilink.UpdatesResponse)
 	if activeConversation {
 		if err := a.protectionGuard().RecordActiveConversation(context.Background(), botID); err != nil {
 			log.Printf("[Bot: %s] Protection active conversation reset failed: %v", botID, err)
+		} else {
+			a.startSendQueueDrainer(botID)
 		}
 	}
 }

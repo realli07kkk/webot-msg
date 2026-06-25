@@ -206,6 +206,106 @@ func TestSendProtectedTextAuditFailureDoesNotFailSend(t *testing.T) {
 	}
 }
 
+func TestSendOrEnqueueTextFallsBackToProtectedSend(t *testing.T) {
+	client := &fakeMessageClient{}
+	guard := &fakeGuard{
+		reservation: protection.Reservation{
+			Kind:                   protection.ReservationSendNormal,
+			HasStatus:              true,
+			MessagesBeforeReminder: 4,
+			TimeBeforeWarning:      9*time.Hour + 30*time.Minute,
+		},
+	}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	outcome, err := SendOrEnqueueText(context.Background(), client, guard, user, "hello", "reminder", TextOptions{
+		IDGenerator: func() (string, error) {
+			return fixedMessageID, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendOrEnqueueText() error = %v", err)
+	}
+	if outcome.Kind != OutcomeSent || !outcome.Result.NormalSent || outcome.Result.ReminderSent {
+		t.Fatalf("SendOrEnqueueText() = %#v, want sent normal only", outcome)
+	}
+	if guard.reserveCalls != 1 {
+		t.Fatalf("ReserveNormalSend calls = %d, want 1", guard.reserveCalls)
+	}
+	want := "hello\n[限流阈值] 剩余可发 4 条 | 距离限制还有 9h30m\n" + fixedMessageID
+	if got := client.messages; len(got) != 1 || got[0] != want {
+		t.Fatalf("messages = %#v, want [%q]", got, want)
+	}
+}
+
+func TestSendOrEnqueueTextQueuesWithoutSending(t *testing.T) {
+	client := &fakeMessageClient{}
+	guard := &fakeQueueGuard{
+		ingress: protection.Ingress{
+			Outcome:  protection.IngressQueued,
+			QueueLen: 1,
+			Reason:   protection.ReasonCount,
+		},
+	}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	outcome, err := SendOrEnqueueText(context.Background(), client, guard, user, "hello", "reminder", TextOptions{})
+	if err != nil {
+		t.Fatalf("SendOrEnqueueText() error = %v", err)
+	}
+	if outcome.Kind != OutcomeQueued || outcome.QueueLen != 1 {
+		t.Fatalf("SendOrEnqueueText() = %#v, want queued length 1", outcome)
+	}
+	if guard.acquireCalls != 1 {
+		t.Fatalf("AcquireOrEnqueue calls = %d, want 1", guard.acquireCalls)
+	}
+	if guard.reserveCalls != 0 {
+		t.Fatalf("ReserveNormalSend calls = %d, want 0 on queued path", guard.reserveCalls)
+	}
+	if len(client.messages) != 0 {
+		t.Fatalf("messages = %#v, want none", client.messages)
+	}
+}
+
+func TestSendOrEnqueueTextQueuedReminderSendsReminderOnly(t *testing.T) {
+	client := &fakeMessageClient{}
+	guard := &fakeQueueGuard{
+		ingress: protection.Ingress{
+			Outcome:      protection.IngressQueued,
+			QueueLen:     1,
+			SendReminder: true,
+			Reason:       protection.ReasonTime,
+		},
+	}
+	user := config.UserConfig{
+		BotID:        "bot-1",
+		IlinkUserID:  "user-1",
+		ContextToken: "ctx-1",
+	}
+
+	outcome, err := SendOrEnqueueText(context.Background(), client, guard, user, "hello", "reminder", TextOptions{})
+	if err != nil {
+		t.Fatalf("SendOrEnqueueText() error = %v", err)
+	}
+	if outcome.Kind != OutcomeQueued || !outcome.Result.ReminderSent || outcome.Result.ReminderReason != protection.ReasonTime {
+		t.Fatalf("SendOrEnqueueText() = %#v, want queued reminder", outcome)
+	}
+	if got := client.messages; len(got) != 1 || got[0] != "reminder" {
+		t.Fatalf("messages = %#v, want reminder only", got)
+	}
+	if guard.recordReminderCalls != 1 {
+		t.Fatalf("RecordReminderSend calls = %d, want 1", guard.recordReminderCalls)
+	}
+}
+
 func TestSendProtectedTextReleaseUsesReservedGenerationAfterDisable(t *testing.T) {
 	guard, redisServer := newRuntimeGuardWithRedis(t)
 	seedProtectionCount(t, guard, "bot-1", 8)
@@ -348,11 +448,14 @@ func (f *fakeMessageClient) SendMessageContext(_ context.Context, _ config.UserC
 }
 
 type fakeGuard struct {
-	reservation       protection.Reservation
-	recordReminderErr error
+	reservation         protection.Reservation
+	recordReminderErr   error
+	reserveCalls        int
+	recordReminderCalls int
 }
 
 func (f *fakeGuard) ReserveNormalSend(context.Context, string) (protection.Reservation, error) {
+	f.reserveCalls++
 	if f.reservation.Kind != protection.ReservationSendNormal || f.reservation.Reason != "" || f.reservation.HasStatus {
 		return f.reservation, nil
 	}
@@ -364,6 +467,7 @@ func (f *fakeGuard) ReleaseNormalSend(context.Context, string) error {
 }
 
 func (f *fakeGuard) RecordReminderSend(context.Context, string) error {
+	f.recordReminderCalls++
 	return f.recordReminderErr
 }
 
@@ -373,6 +477,29 @@ func (f *fakeGuard) RecordActiveConversation(context.Context, string) error {
 
 func (f *fakeGuard) CheckTimeWindow(context.Context, string) (protection.Decision, error) {
 	return protection.Allow(), nil
+}
+
+type fakeQueueGuard struct {
+	fakeGuard
+	ingress      protection.Ingress
+	acquireCalls int
+}
+
+func (f *fakeQueueGuard) AcquireOrEnqueue(context.Context, string, string) (protection.Ingress, error) {
+	f.acquireCalls++
+	return f.ingress, nil
+}
+
+func (f *fakeQueueGuard) PeekQueued(context.Context, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
+func (f *fakeQueueGuard) DropFront(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeQueueGuard) QueueLen(context.Context, string) (int, error) {
+	return 0, nil
 }
 
 type fakeAuditor struct {

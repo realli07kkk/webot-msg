@@ -1,0 +1,141 @@
+feature: 2026-06-25-protection-send-queue
+created: 2026-06-25
+
+steps:
+  - action: "编排骨架（sender 抽取）：抽 sendWithReservation；SendProtectedTextWithOptions 改为 BeginOperation+ReserveNormalSend+sendWithReservation 的组合（行为零变化）；新增 SendOrEnqueueText 先在『无 SendQueueController』分支退化为今日普通发送"
+    exit_signal: "go test ./internal/sender ./internal/api ./internal/app 全绿；API/控制台发送行为与改动前一致（含 freeze→429 仍走旧分支）；diff 不改变既有发送可观察结果"
+    status: done
+  - action: "计算节点（protection 队列）：新增 internal/protection/queue.go——queuedPayload、SendQueueController（RedisGuard 实现）、AcquireOrEnqueue 决策 Lua（frozen/LLEN/阈值/时间窗/-1-2/上限分支）、PeekQueued/DropFront/QueueLen、入队带 PEXPIRE；Status 加 QueuedCount + ProtectionStatus 增 LLEN"
+    exit_signal: "protection 队列单测（miniredis）覆盖：空队列直发/计数阈值 send_then_reminder/已冻结入队/队列非空入队/上限满 QueueFull/时间窗入队带 queued_reminder/-1-2 入队无提醒/peek-pop FIFO/QueueLen/QueuedCount"
+    status: done
+  - action: "API 接入：handleSendMessage 改调 sender.SendOrEnqueueText，映射 Queued→202(status=queued,queued=N)、QueueFull→503、Sent→200；保护开启冻结时入队不调 iLink"
+    exit_signal: "httptest 覆盖：保护关闭→200直发、保护开启未冻结→200直发、冻结→202入队、队满→503；冻结路径无 iLink 发送调用"
+    status: done
+  - action: "重放接通（app drainer）：新增 internal/app/send_queue.go——per-bot 单 drainer（去重镜像 runningMonitors）；在 RecordActiveConversation 成功后 + EnableProtection/restoreProtectionState 后触发；drain 复用 SendProtectedTextWithOptions(plain) + peek→send→pop-on-success，再冻结/网络失败/无上下文即停，过时条目丢弃"
+    exit_signal: "端到端：冻结期入队 N 条 → 模拟恢复 → 队列按 FIFO 投递并清空；重放途中再触限→停止且剩余保留；过时条目被丢弃；重启后 auto-restore 触发 drain 清空遗留积压"
+    status: done
+  - action: "RuntimeGuard 委托 + 配置 + 状态展示 + 测试/文档收尾：RuntimeGuard 经 operation 暴露 SendQueueController（镜像 ProtectionStatus 断言）；ProtectionConfig/EnableConfig/RedisGuardConfig 加 QueueMaxLen(默认1000)/QueueTTL(默认=ActiveWindow) 内置默认 + main.go 装配；/protection status 展示 QueuedCount；补齐验收场景与用户文档"
+    exit_signal: "所有验收场景有可观察证据；go test ./... 全绿；go vet ./... 通过；go fmt 无 diff"
+    status: done
+
+checks:
+  - item: "queuedPayload{Text string, EnqueuedMs int64} JSON 序列化结构落地（Lua 视为不透明字符串）"
+    source: 名词契约
+    status: passed
+  - item: "SendQueueController 接口（AcquireOrEnqueue/PeekQueued/DropFront/QueueLen）+ Ingress{Outcome,Reservation,QueueLen,SendReminder,Reason} + IngressOutcome(SendNow/Queued/QueueFull) 落地"
+    source: 名词契约
+    status: passed
+  - item: "发送队列 key 为 {prefix}:protect:{botID}:queue（List），与 :state/:active 共用 {botID} hash tag 落同一 slot"
+    source: 名词契约
+    status: passed
+  - item: "AcquireOrEnqueue 单 Lua 返回 send/send_then_reminder/queued/queued_reminder/full，映射为 SendNow/Queued/Queued+SendReminder/QueueFull"
+    source: 名词契约
+    status: passed
+  - item: "protection.Status 新增 QueuedCount，ProtectionStatus 增 LLEN(:queue)"
+    source: 名词契约
+    status: passed
+  - item: "RedisGuardConfig/EnableConfig/runtimeconfig.ProtectionConfig 新增 QueueMaxLen(默认1000)/QueueTTL(默认=ActiveWindow)，内置默认、不暴露 TOML key"
+    source: 名词契约
+    status: passed
+  - item: "sender 抽出 sendWithReservation + 新增 SendOrEnqueueText；SendProtectedTextWithOptions 行为零变化（控制台/drainer 复用）"
+    source: 名词契约
+    status: passed
+  - item: "API ingress：SendOrEnqueueText 在实现 SendQueueController 时走 AcquireOrEnqueue 三分支，否则（NoopGuard/保护关闭）退化为 ReserveNormalSend+sendWithReservation"
+    source: 编排骨架
+    status: passed
+  - item: "drain：per-bot 单 drainer，复用 SendProtectedTextWithOptions(plain) + peek→send→pop-on-success"
+    source: 编排骨架
+    status: passed
+  - item: "drain 触发点：RecordActiveConversation 成功后 + EnableProtection/restoreProtectionState 后"
+    source: 编排骨架
+    status: passed
+  - item: "FIFO + 不插队：frozen 或 LLEN>0 一律入队；peek→pop 使队首发送期间 LLEN 恒 >0，并发新请求必然入队"
+    source: 流程级约束
+    status: passed
+  - item: "原子性：AcquireOrEnqueue 的判延迟+预留+RPUSH 在单 Lua 内完成（非多次 Redis 往返）"
+    source: 流程级约束
+    status: passed
+  - item: "at-least-once：peek→send→pop 在『发送成功后、pop 前』crash 会重发，接受重复、不去重"
+    source: 流程级约束
+    status: passed
+  - item: "错误语义：API 直发网络失败 → ReleaseNormalSend+500 不入队；drain 网络失败或再冻结 → 停止 drain、保留队首"
+    source: 流程级约束
+    status: passed
+  - item: "有界：入队前 LLEN<QueueMaxLen 才 RPUSH，满则 QueueFull；RPUSH 刷新 :queue 的 PEXPIRE；drain peek 后用 now-enqueued_ms>QueueTTL 精确丢弃"
+    source: 流程级约束
+    status: passed
+  - item: "去重 drain：同一 bot 至多一个 drainer，并发触发合并，drainer 退出窗口内的新触发能拉起新 drainer（不丢唤醒）"
+    source: 流程级约束
+    status: passed
+  - item: "持久化：队列 source of truth 在 Redis，不进 auth store/状态文件；/protection disable 不 flush 队列"
+    source: 流程级约束
+    status: passed
+  - item: "挂载点：handleSendMessage 改调 SendOrEnqueueText + 202(queued)/503(queue full) 响应分支"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：per-bot drainer 子系统 + RecordActiveConversation/enable/restore 触发"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：Redis :queue key + 队列 Lua（AcquireOrEnqueue/peek/pop/llen/PEXPIRE）位于 internal/protection"
+    source: 挂载点
+    status: passed
+  - item: "挂载点：/protection status 增展 Queued messages: N（protection.Status.QueuedCount）"
+    source: 挂载点
+    status: passed
+  - item: "范围守护：控制台 /send（app.SendText）路径不出现入队调用，冻结时仍返回保护锁定错误"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：typing（handleTyping/SendTypingContext）与保护提醒（sendProtectionReminder）路径不出现入队调用"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：网络/iLink 失败（非冻结）分支不 RPUSH，仍 ReleaseNormalSend+返回错误"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：runtimeconfig/TOML 不新增队列相关 key；QueueMaxLen/QueueTTL 为内置默认"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：protection.Guard 核心接口不新增队列方法（队列方法仅在 SendQueueController 断言接口上）"
+    source: 范围守护
+    status: passed
+  - item: "范围守护：recordActiveConversationScript 与 releaseNormalSendScript 不动 :queue；drain 用 plain ReserveNormalSend 与 ingress 队列感知决策分离"
+    source: 范围守护
+    status: passed
+  - item: "验收：保护关闭时 API 发送 → 200 正常投递（无队列参与，与改动前一致）"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护开启、未冻结、队列空 → API 发送 200 正常投递并计数"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护开启且已冻结 → API 发送 202(status=queued,队列长度)，Redis :queue 多一条，不调用 iLink"
+    source: 验收场景
+    status: passed
+  - item: "验收：冻结期连发 3 条 → 队列内 3 条且顺序与到达一致"
+    source: 验收场景
+    status: passed
+  - item: "验收：冻结期入队 N 条后模拟微信主动消息恢复 → 按 FIFO 投递到当前上下文并清空，每条带 uuid v7 ID，审计开启时按 ID 落审计（时间为投递时刻）"
+    source: 验收场景
+    status: passed
+  - item: "验收：重放未清空期间到达的新 API 请求被入队、排在堆积之后，不抢先投递"
+    source: 验收场景
+    status: passed
+  - item: "验收：重放途中再次触发次数/时间限制 → drain 停止、剩余消息留在队列、下次恢复继续"
+    source: 验收场景
+    status: passed
+  - item: "验收：队列达 QueueMaxLen 时新入队 → 503，已有 FIFO 不丢失"
+    source: 验收场景
+    status: passed
+  - item: "验收：单条 enqueued_ms 早于 now-QueueTTL → 重放时被丢弃不投递；:queue 带 PEXPIRE"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护开启未冻结、直发途中 iLink 失败 → 500 + ReleaseNormalSend，该消息不进队列"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护 auto-restore（Redis 有遗留队列、bot 未冻结且窗口就绪）→ 启动后触发 drain 清空"
+    source: 验收场景
+    status: passed
+  - item: "验收：保护开启且选中 bot 时 /protection status 展示 Queued messages: N"
+    source: 验收场景
+    status: passed
+  - item: "验收：触发次数阈值的最后一条经 API 直发成功(200)、其后冻结，下一条 API 请求才入队(202)"
+    source: 验收场景
+    status: passed

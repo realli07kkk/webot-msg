@@ -101,6 +101,87 @@ func TestHandleSendMessageRejectsFrozenBeforeSendingUserText(t *testing.T) {
 	}
 }
 
+func TestHandleSendMessageWithQueueControllerSendsNow(t *testing.T) {
+	store := newAPIStore(t)
+	client := &fakeMessageClient{}
+	guard := &fakeQueueProtectionGuard{
+		ingress: protection.Ingress{
+			Outcome:     protection.IngressSendNow,
+			Reservation: protection.SendNormal(),
+		},
+	}
+	server := newTestServer(store, client, guard)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
+	server.handleBotAction(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s, want 200", rr.Code, rr.Body.String())
+	}
+	want := "hello\n" + fixedMessageID
+	if got := client.messages; len(got) != 1 || got[0] != want {
+		t.Fatalf("messages = %#v, want [%q]", got, want)
+	}
+	if guard.acquireCalls != 1 {
+		t.Fatalf("AcquireOrEnqueue calls = %d, want 1", guard.acquireCalls)
+	}
+}
+
+func TestHandleSendMessageQueuesFrozenWithoutSending(t *testing.T) {
+	store := newAPIStore(t)
+	client := &fakeMessageClient{}
+	guard := &fakeQueueProtectionGuard{
+		ingress: protection.Ingress{
+			Outcome:  protection.IngressQueued,
+			QueueLen: 3,
+			Reason:   protection.ReasonCount,
+		},
+	}
+	server := newTestServer(store, client, guard)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
+	server.handleBotAction(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body = %s, want 202", rr.Code, rr.Body.String())
+	}
+	if len(client.messages) != 0 {
+		t.Fatalf("messages = %#v, want none", client.messages)
+	}
+	var body map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response JSON decode error = %v", err)
+	}
+	if body["status"] != "queued" || body["queued"] != float64(3) {
+		t.Fatalf("response body = %#v, want queued length 3", body)
+	}
+}
+
+func TestHandleSendMessageReturnsServiceUnavailableWhenQueueFull(t *testing.T) {
+	store := newAPIStore(t)
+	client := &fakeMessageClient{}
+	guard := &fakeQueueProtectionGuard{
+		ingress: protection.Ingress{
+			Outcome: protection.IngressQueueFull,
+			Reason:  protection.ReasonCount,
+		},
+	}
+	server := newTestServer(store, client, guard)
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/bots/bot-1/messages?token=api-token&text=hello", nil)
+	server.handleBotAction(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s, want 503", rr.Code, rr.Body.String())
+	}
+	if len(client.messages) != 0 {
+		t.Fatalf("messages = %#v, want none", client.messages)
+	}
+}
+
 func TestHandleTypingDoesNotReserveOrAppendStatusFooter(t *testing.T) {
 	store := newAPIStore(t)
 	client := &fakeMessageClient{}
@@ -203,4 +284,27 @@ func (f *fakeProtectionGuard) RecordActiveConversation(context.Context, string) 
 
 func (f *fakeProtectionGuard) CheckTimeWindow(context.Context, string) (protection.Decision, error) {
 	return protection.Allow(), nil
+}
+
+type fakeQueueProtectionGuard struct {
+	fakeProtectionGuard
+	ingress      protection.Ingress
+	acquireCalls int
+}
+
+func (f *fakeQueueProtectionGuard) AcquireOrEnqueue(context.Context, string, string) (protection.Ingress, error) {
+	f.acquireCalls++
+	return f.ingress, nil
+}
+
+func (f *fakeQueueProtectionGuard) PeekQueued(context.Context, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
+func (f *fakeQueueProtectionGuard) DropFront(context.Context, string) error {
+	return nil
+}
+
+func (f *fakeQueueProtectionGuard) QueueLen(context.Context, string) (int, error) {
+	return 0, nil
 }

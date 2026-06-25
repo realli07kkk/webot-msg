@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -240,8 +241,13 @@ func TestProtectionCheckerLifecycle(t *testing.T) {
 }
 
 type fakeClient struct {
-	messages []string
-	sendErr  error
+	mu                   sync.Mutex
+	messages             []string
+	sendErr              error
+	afterSend            func(text string)
+	sendStarted          chan struct{}
+	sendStartedOnce      sync.Once
+	waitForContextCancel bool
 }
 
 func (f *fakeClient) QRLoginWithWriter(_ io.Writer) (*config.UserConfig, error) {
@@ -252,11 +258,25 @@ func (f *fakeClient) GetUpdates(config.UserConfig, time.Duration) (*ilink.Update
 	return nil, errors.New("not implemented")
 }
 
-func (f *fakeClient) SendMessageContext(_ context.Context, _ config.UserConfig, _ string, text string, _ string) error {
+func (f *fakeClient) SendMessageContext(ctx context.Context, _ config.UserConfig, _ string, text string, _ string) error {
+	if f.sendStarted != nil {
+		f.sendStartedOnce.Do(func() {
+			close(f.sendStarted)
+		})
+	}
+	if f.waitForContextCancel {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if f.sendErr != nil {
 		return f.sendErr
 	}
+	f.mu.Lock()
 	f.messages = append(f.messages, text)
+	f.mu.Unlock()
+	if f.afterSend != nil {
+		f.afterSend(text)
+	}
 	return nil
 }
 
@@ -274,8 +294,12 @@ func fixedIDGenerator() (string, error) {
 
 type fakeGuard struct {
 	reservation         protection.Reservation
+	reservations        []protection.Reservation
 	reserveErr          error
+	reserveCalls        int
 	releaseCalls        int
+	failCanceledRelease bool
+	releaseErr          error
 	checkDecision       protection.Decision
 	checkErr            error
 	recordReminderCalls int
@@ -283,8 +307,14 @@ type fakeGuard struct {
 }
 
 func (f *fakeGuard) ReserveNormalSend(context.Context, string) (protection.Reservation, error) {
+	f.reserveCalls++
 	if f.reserveErr != nil {
 		return protection.Reservation{}, f.reserveErr
+	}
+	if len(f.reservations) > 0 {
+		reservation := f.reservations[0]
+		f.reservations = f.reservations[1:]
+		return reservation, nil
 	}
 	if f.reservation.Kind != protection.ReservationSendNormal || f.reservation.Reason != "" || f.reservation.HasStatus {
 		return f.reservation, nil
@@ -292,8 +322,14 @@ func (f *fakeGuard) ReserveNormalSend(context.Context, string) (protection.Reser
 	return protection.SendNormal(), nil
 }
 
-func (f *fakeGuard) ReleaseNormalSend(context.Context, string) error {
+func (f *fakeGuard) ReleaseNormalSend(ctx context.Context, _ string) error {
 	f.releaseCalls++
+	if f.failCanceledRelease && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if f.releaseErr != nil {
+		return f.releaseErr
+	}
 	return nil
 }
 

@@ -29,6 +29,8 @@ type EnableConfig struct {
 	MessageWarningRemaining int
 	ActiveWindow            time.Duration
 	TimeWarningBefore       time.Duration
+	QueueMaxLen             int
+	QueueTTL                time.Duration
 }
 
 func NewRuntimeGuard() *RuntimeGuard {
@@ -60,6 +62,8 @@ func (g *RuntimeGuard) Enable(ctx context.Context, cfg EnableConfig) error {
 		MessageWarningRemaining: cfg.MessageWarningRemaining,
 		ActiveWindow:            cfg.ActiveWindow,
 		TimeWarningBefore:       cfg.TimeWarningBefore,
+		QueueMaxLen:             cfg.QueueMaxLen,
+		QueueTTL:                cfg.QueueTTL,
 	})
 
 	g.mu.Lock()
@@ -215,6 +219,46 @@ func (o *runtimeOperation) ProtectionStatus(ctx context.Context, botID string) (
 		return Status{BotID: botID}, nil
 	}
 	return statusProvider.ProtectionStatus(ctx, botID)
+}
+
+func (o *runtimeOperation) AcquireOrEnqueue(ctx context.Context, botID string, text string) (Ingress, error) {
+	controller, ok := o.sendQueueController()
+	if !ok {
+		return Ingress{Outcome: IngressSendNow, Reservation: SendNormal()}, nil
+	}
+	return controller.AcquireOrEnqueue(ctx, botID, text)
+}
+
+func (o *runtimeOperation) PeekQueued(ctx context.Context, botID string) (string, int64, bool, error) {
+	controller, ok := o.sendQueueController()
+	if !ok {
+		return "", 0, false, nil
+	}
+	return controller.PeekQueued(ctx, botID)
+}
+
+func (o *runtimeOperation) DropFront(ctx context.Context, botID string) error {
+	controller, ok := o.sendQueueController()
+	if !ok {
+		return nil
+	}
+	return controller.DropFront(ctx, botID)
+}
+
+func (o *runtimeOperation) QueueLen(ctx context.Context, botID string) (int, error) {
+	controller, ok := o.sendQueueController()
+	if !ok {
+		return 0, nil
+	}
+	return controller.QueueLen(ctx, botID)
+}
+
+func (o *runtimeOperation) sendQueueController() (SendQueueController, bool) {
+	if o == nil || o.Guard == nil {
+		return nil, false
+	}
+	controller, ok := o.Guard.(SendQueueController)
+	return controller, ok
 }
 
 func closeRedisClient(client *redis.Client) {

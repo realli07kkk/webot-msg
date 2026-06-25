@@ -3,9 +3,9 @@ doc_type: user-guide
 slug: runtime-config
 component: 2026-06-10-runtime-toml-config
 status: current
-summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略、OpenTelemetry traces、Redis 和消息审计 TTL
+summary: 说明如何用 TOML 配置 webot-msg 的端口、凭据路径、控制台 socket、iLink 地址、日志文件策略、OpenTelemetry traces、Redis、发送保护和消息审计 TTL
 tags: [config, cli, control-console, autocomplete, logging, telemetry, tracing, protection, redis, audit]
-last_reviewed: 2026-06-13
+last_reviewed: 2026-06-25
 ---
 
 # 运行配置说明
@@ -168,11 +168,17 @@ env = "prod"
 
 - 下发次数快达到内置限制时，程序会用最后的下发额度发送保护提醒，随后冻结普通文本发送。
 - 24h 主动对话窗口快结束时，程序也会发送提醒并冻结普通文本发送。
-- 冻结后，你需要从微信 app 给机器人主动发一条消息；监听到这条消息后，程序会清零计数、重置 24h 窗口并解除冻结。
+- 冻结后，HTTP API 普通文本发送不会再直接返回保护锁定错误，而是按 bot 写入 Redis 发送队列并返回 `202`，响应体包含 `status: "queued"` 和当前队列长度；控制台普通文本发送仍即时返回保护锁定错误。
+- 你需要从微信 app 给机器人主动发一条消息；监听到这条消息后，程序会清零计数、重置 24h 窗口并解除冻结，然后按 FIFO 重放队列里的 API 文本。
+- 队列堆积清空前，新到的 HTTP API 文本会继续排到队尾，不会插队；队列默认最多 1000 条，单条默认保留 24h，二者都是内置值，不提供 TOML 配置项。
+- 队列满时，HTTP API 普通文本发送返回 `503`，已有队列内容不丢；过期队列消息会在重放时丢弃，不投递。
+- 控制台 `/send`、typing、保护提醒和普通 iLink 网络发送失败不会进入队列；网络发送失败仍由调用方按 `500` 自行重试。
 - 保护状态按 bot 分开存储，内置规则全局共用；一个 bot 冻结不会影响另一个 bot。
 - Redis 不可用、认证失败或保护状态读写失败时，保护模式会 fail closed，拒绝普通文本发送，避免静默越过限制。
-- 查看当前 active bot 离触发限制还剩多少次数或时间，可以执行 `/protection status`。
-- 关闭保护可以执行 `/protection disable`；关闭状态也会写入状态文件，服务重启后保持关闭。
+- 查看当前 active bot 离触发限制还剩多少次数或时间、以及发送队列里还有多少条消息，可以执行 `/protection status`。
+- 关闭保护可以执行 `/protection disable`；关闭状态也会写入状态文件，服务重启后保持关闭。关闭保护不会清空 Redis 发送队列。
+
+升级到发送队列版本后，旧客户端如果曾把冻结期 `429` 当作“稍后重试”信号，需要改为识别 `202` + `status: "queued"`：这表示服务已接收请求并会在微信主动对话恢复后补发，不应立即重试同一条消息。队列满时返回 `503`，调用方可以按自己的退避策略稍后重试。
 
 `redis.password` 不会写入日志。建议把带密码的真实配置文件留在部署机器本地，不提交到 Git。
 
