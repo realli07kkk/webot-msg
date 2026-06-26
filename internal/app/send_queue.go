@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -10,6 +11,30 @@ import (
 )
 
 const sendQueueCommitTimeout = 5 * time.Second
+
+const (
+	// backlogReplayPrefix 标记一条消息是保护恢复后从积压队列补发的。
+	backlogReplayPrefix     = "[积压补发]"
+	backlogReplayTimeLayout = "2006-01-02 15:04:05 -0700"
+)
+
+var backlogReplayLocation = func() *time.Location {
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		return time.FixedZone("Asia/Shanghai", 8*60*60)
+	}
+	return loc
+}()
+
+// buildBacklogReplayNotice 生成积压补发消息的前缀，注明原始入队时间并说明因触发
+// 发送保护被延迟补发。enqueuedMs 为收到 API 调用但触发保护无法发送的 Unix 毫秒时间。
+func buildBacklogReplayNotice(enqueuedMs int64) string {
+	if enqueuedMs <= 0 {
+		return backlogReplayPrefix + " 收到 API 调用时间未知；该消息因发送保护限制进入积压队列，恢复后延迟补发。"
+	}
+	original := time.UnixMilli(enqueuedMs).In(backlogReplayLocation).Format(backlogReplayTimeLayout)
+	return fmt.Sprintf("%s 收到 API 调用时间：%s；该消息因发送保护限制进入积压队列，恢复后延迟补发。", backlogReplayPrefix, original)
+}
 
 type sendQueueDrainer struct {
 	ctx    context.Context
@@ -132,7 +157,8 @@ func (a *App) drainSendQueue(ctx context.Context, botID string) {
 			return
 		}
 
-		result, err := sender.SendProtectedTextWithOptions(ctx, a.client, operation, user, text, a.reminderText, sender.TextOptions{
+		replayText := buildBacklogReplayNotice(enqueuedMs) + "\n" + text
+		result, err := sender.SendProtectedTextWithOptions(ctx, a.client, operation, user, replayText, a.reminderText, sender.TextOptions{
 			IDGenerator: a.idGenerator,
 			Auditor:     a.auditor,
 		})

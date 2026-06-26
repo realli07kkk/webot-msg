@@ -16,10 +16,12 @@ import (
 )
 
 func TestDrainSendQueueReplaysFIFOAndClears(t *testing.T) {
+	enqueuedOne := time.Now().UnixMilli()
+	enqueuedTwo := time.Now().UnixMilli()
 	guard := &fakeSendQueueGuard{
 		queue: []fakeQueuedMessage{
-			{text: "one", enqueuedMs: time.Now().UnixMilli()},
-			{text: "two", enqueuedMs: time.Now().UnixMilli()},
+			{text: "one", enqueuedMs: enqueuedOne},
+			{text: "two", enqueuedMs: enqueuedTwo},
 		},
 	}
 	client := &fakeClient{}
@@ -31,8 +33,8 @@ func TestDrainSendQueueReplaysFIFOAndClears(t *testing.T) {
 
 	a.drainSendQueue(context.Background(), "bot-1")
 
-	wantOne := "one\n" + fixedMessageID
-	wantTwo := "two\n" + fixedMessageID
+	wantOne := buildBacklogReplayNotice(enqueuedOne) + "\none\n" + fixedMessageID
+	wantTwo := buildBacklogReplayNotice(enqueuedTwo) + "\ntwo\n" + fixedMessageID
 	if got := client.messages; len(got) != 2 || got[0] != wantOne || got[1] != wantTwo {
 		t.Fatalf("messages = %#v, want [%q %q]", got, wantOne, wantTwo)
 	}
@@ -44,7 +46,22 @@ func TestDrainSendQueueReplaysFIFOAndClears(t *testing.T) {
 	}
 }
 
+func TestBuildBacklogReplayNoticeIncludesOriginalTimeAndReason(t *testing.T) {
+	enqueuedMs := time.Date(2026, 6, 26, 2, 30, 45, 123*int(time.Millisecond), time.UTC).UnixMilli()
+
+	got := buildBacklogReplayNotice(enqueuedMs)
+
+	wantTime := "2026-06-26 10:30:45 +0800"
+	if !strings.HasPrefix(got, backlogReplayPrefix+" 收到 API 调用时间："+wantTime+"；") {
+		t.Fatalf("notice = %q, want prefix with original API time %q", got, wantTime)
+	}
+	if !strings.Contains(got, "因发送保护限制进入积压队列，恢复后延迟补发") {
+		t.Fatalf("notice = %q, want backlog delay reason", got)
+	}
+}
+
 func TestDrainSendQueueStopsOnRejectionAndKeepsFront(t *testing.T) {
+	enqueuedOne := time.Now().UnixMilli()
 	guard := &fakeSendQueueGuard{
 		fakeGuard: fakeGuard{
 			reservations: []protection.Reservation{
@@ -53,7 +70,7 @@ func TestDrainSendQueueStopsOnRejectionAndKeepsFront(t *testing.T) {
 			},
 		},
 		queue: []fakeQueuedMessage{
-			{text: "one", enqueuedMs: time.Now().UnixMilli()},
+			{text: "one", enqueuedMs: enqueuedOne},
 			{text: "two", enqueuedMs: time.Now().UnixMilli()},
 		},
 	}
@@ -66,7 +83,7 @@ func TestDrainSendQueueStopsOnRejectionAndKeepsFront(t *testing.T) {
 
 	a.drainSendQueue(context.Background(), "bot-1")
 
-	wantOne := "one\n" + fixedMessageID
+	wantOne := buildBacklogReplayNotice(enqueuedOne) + "\none\n" + fixedMessageID
 	if got := client.messages; len(got) != 1 || got[0] != wantOne {
 		t.Fatalf("messages = %#v, want [%q]", got, wantOne)
 	}
@@ -128,10 +145,11 @@ func TestDrainSendQueueStopsWhenContextMissing(t *testing.T) {
 }
 
 func TestDrainSendQueuePopsSentMessageAfterDrainContextCanceled(t *testing.T) {
+	enqueuedOne := time.Now().UnixMilli()
 	guard := &fakeSendQueueGuard{
 		failCanceledDrop: true,
 		queue: []fakeQueuedMessage{
-			{text: "one", enqueuedMs: time.Now().UnixMilli()},
+			{text: "one", enqueuedMs: enqueuedOne},
 			{text: "two", enqueuedMs: time.Now().UnixMilli()},
 		},
 	}
@@ -143,7 +161,7 @@ func TestDrainSendQueuePopsSentMessageAfterDrainContextCanceled(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	client.afterSend = func(text string) {
-		if strings.HasPrefix(text, "one\n") {
+		if strings.Contains(text, "\none\n") {
 			cancel()
 		}
 	}
@@ -153,7 +171,7 @@ func TestDrainSendQueuePopsSentMessageAfterDrainContextCanceled(t *testing.T) {
 	client.mu.Lock()
 	messages := append([]string(nil), client.messages...)
 	client.mu.Unlock()
-	wantOne := "one\n" + fixedMessageID
+	wantOne := buildBacklogReplayNotice(enqueuedOne) + "\none\n" + fixedMessageID
 	if len(messages) != 1 || messages[0] != wantOne {
 		t.Fatalf("messages = %#v, want [%q]", messages, wantOne)
 	}
@@ -221,10 +239,11 @@ func TestDrainSendQueueReleasesReservationAfterSendContextCanceled(t *testing.T)
 }
 
 func TestDisableProtectionStopsActiveSendQueueDrainerAndKeepsRemaining(t *testing.T) {
+	enqueuedOne := time.Now().UnixMilli()
 	guard := &fakeSendQueueGuard{
 		failCanceledDrop: true,
 		queue: []fakeQueuedMessage{
-			{text: "one", enqueuedMs: time.Now().UnixMilli()},
+			{text: "one", enqueuedMs: enqueuedOne},
 			{text: "two", enqueuedMs: time.Now().UnixMilli()},
 		},
 	}
@@ -248,11 +267,11 @@ func TestDisableProtectionStopsActiveSendQueueDrainerAndKeepsRemaining(t *testin
 		})
 	}
 	client.afterSend = func(text string) {
-		if strings.HasPrefix(text, "one\n") {
+		if strings.Contains(text, "\none\n") {
 			disabled <- a.DisableProtection(io.Discard)
 			return
 		}
-		if strings.HasPrefix(text, "two\n") {
+		if strings.Contains(text, "\ntwo\n") {
 			secondOnce.Do(func() {
 				close(secondSent)
 			})
@@ -283,7 +302,7 @@ func TestDisableProtectionStopsActiveSendQueueDrainerAndKeepsRemaining(t *testin
 	client.mu.Lock()
 	messages := append([]string(nil), client.messages...)
 	client.mu.Unlock()
-	wantOne := "one\n" + fixedMessageID
+	wantOne := buildBacklogReplayNotice(enqueuedOne) + "\none\n" + fixedMessageID
 	if len(messages) != 1 || messages[0] != wantOne {
 		t.Fatalf("messages = %#v, want [%q]", messages, wantOne)
 	}
