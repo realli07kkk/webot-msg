@@ -103,6 +103,49 @@ print_paths() {
 	info "service file: ${SERVICE_FILE}"
 }
 
+run_repo_git() {
+	if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+		if command -v sudo >/dev/null 2>&1; then
+			sudo -u "${SUDO_USER}" git -C "${REPO_ROOT}" "$@"
+			return
+		fi
+		if command -v runuser >/dev/null 2>&1; then
+			runuser -u "${SUDO_USER}" -- git -C "${REPO_ROOT}" "$@"
+			return
+		fi
+	fi
+
+	git -C "${REPO_ROOT}" "$@"
+}
+
+pull_latest_source() {
+	require_command git
+	info "pulling latest source: ${REPO_ROOT}"
+	run_repo_git pull --ff-only || fail "git pull failed"
+}
+
+print_build_commit() {
+	require_command git
+	local unstaged_status=0
+	local staged_status=0
+
+	info "build commit"
+	run_repo_git --no-pager log -1 --date=iso-strict --pretty=format:'commit: %H%nshort: %h%nauthor: %an <%ae>%ndate: %ad%nsubject: %s' || fail "cannot read latest git commit"
+	printf '\n'
+
+	run_repo_git diff --quiet || unstaged_status=$?
+	run_repo_git diff --cached --quiet || staged_status=$?
+	if [[ "${unstaged_status}" -gt 1 || "${staged_status}" -gt 1 ]]; then
+		fail "cannot check working tree status"
+	fi
+
+	if [[ "${unstaged_status}" -eq 1 || "${staged_status}" -eq 1 ]]; then
+		info "working tree: dirty"
+	else
+		info "working tree: clean"
+	fi
+}
+
 prepare_common_context() {
 	require_linux_systemd
 	require_command go
@@ -124,6 +167,7 @@ ensure_systemd_path() {
 }
 
 build_binary() {
+	print_build_commit
 	info "building ${BUILD_BINARY_PATH}"
 	mkdir -p "${BIN_DIR}"
 	chown_if_root "${DEPLOY_USER}:${DEPLOY_GROUP}" "${BIN_DIR}" || fail "cannot chown ${BIN_DIR}"
@@ -432,6 +476,7 @@ start_service() {
 }
 
 cmd_install() {
+	pull_latest_source
 	prepare_common_context
 	require_sudo
 	build_binary
@@ -444,6 +489,7 @@ cmd_install() {
 }
 
 cmd_upgrade() {
+	pull_latest_source
 	require_linux_systemd
 	local was_active=0
 	if service_is_active; then

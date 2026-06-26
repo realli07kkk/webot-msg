@@ -5,20 +5,21 @@ component: 2026-06-10-linux-systemd-deploy
 status: current
 summary: 说明如何在 Linux systemd 环境安装、升级和控制 webot-msg 服务，并维护 telemetry、Redis、audit 默认配置段
 tags: [deploy, linux, systemd, control-console, audit]
-last_reviewed: 2026-06-13
+last_reviewed: 2026-06-26
 ---
 
 # Linux systemd 部署说明
 
 ## 功能简介
 
-`scripts/linux-service.sh` 用于在 Linux systemd 环境从源码目录安装和升级 `webot-msg`。脚本会编译仓库内的 Go 程序，把二进制安装到 `/usr/local/bin/webot-msg`，准备默认运行目录和配置文件，并生成 `webot-msg.service`。
+`scripts/linux-service.sh` 用于在 Linux systemd 环境从源码目录安装和升级 `webot-msg`。脚本会先执行 `git pull --ff-only`，再编译仓库内的 Go 程序，把二进制安装到 `/usr/local/bin/webot-msg`，准备默认运行目录和配置文件，并生成 `webot-msg.service`。
 
 安装不会自动启动服务。确认配置后，可以通过脚本或 `systemctl` 启动。
 
 ## 前置条件
 
 - 目标机器使用 Linux，并且当前系统由 `systemd` 管理。
+- 源码目录是可正常拉取远端更新的 Git 仓库；如果本地分支无法 fast-forward，部署会中止。
 - 已安装 Go，并且版本满足 `go.mod` 中的要求。
 - 执行用户可以通过 `sudo` 写入 `/etc/systemd/system/` 并执行 `systemctl`。
 - 脚本需要从仓库根目录或仓库内路径执行。
@@ -31,6 +32,8 @@ last_reviewed: 2026-06-13
 
 安装动作会执行：
 
+- 执行 `git pull --ff-only`
+- 打印即将编译的最新 commit 信息和工作区状态
 - 编译当前源码到 `bin/webot-msg`
 - 安装二进制到 `/usr/local/bin/webot-msg`
 - 创建 `~/.webot-msg/config/` 和 `~/.webot-msg/logs/`
@@ -106,10 +109,10 @@ nc -U "$HOME/.webot-msg/webot-msg.sock"
 ./scripts/linux-service.sh upgrade
 ```
 
-升级动作会先用 `systemctl is-active` 判断 `webot-msg` 是否正在运行：
+升级动作会先执行 `git pull --ff-only`，再用 `systemctl is-active` 判断 `webot-msg` 是否正在运行：
 
-- 如果服务处于 `active`，脚本会先 `stop`，再编译 `bin/webot-msg`、替换 `/usr/local/bin/webot-msg`，刷新 `/etc/systemd/system/webot-msg.service`，执行 `daemon-reload`，成功后重新 `start`
-- 如果服务不是 `active`，脚本会编译 `bin/webot-msg`、替换 `/usr/local/bin/webot-msg`，刷新 systemd unit 并 `daemon-reload`，但不会自动启动
+- 如果服务处于 `active`，脚本会先 `stop`，再打印最新 commit 信息、编译 `bin/webot-msg`、替换 `/usr/local/bin/webot-msg`，刷新 `/etc/systemd/system/webot-msg.service`，执行 `daemon-reload`，成功后重新 `start`
+- 如果服务不是 `active`，脚本会打印最新 commit 信息、编译 `bin/webot-msg`、替换 `/usr/local/bin/webot-msg`，刷新 systemd unit 并 `daemon-reload`，但不会自动启动
 
 编译会先写入临时二进制，成功后才替换 `bin/webot-msg`，再安装到 `/usr/local/bin/webot-msg`。如果 `go build` 失败，旧二进制不会被破坏。
 
